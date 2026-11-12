@@ -48,3 +48,4 @@ make build && FLEET_E2E_BIN=$PWD/fleet \
 - Config changes are applied hot through `Server.SetConfig`; keep `config.yaml` backward compatible.
 - No real host names, addresses or keys anywhere: use `example.com`, `10.0.x.x`, names like `laptop`, `desktop`.
 - User-facing text is English. Docs stay short: `README.md` and a few files in `docs/`.
+- License: AGPL-3.0 ([LICENSE](LICENSE)); contributions are also licensable commercially ([CONTRIBUTING.md](CONTRIBUTING.md)).

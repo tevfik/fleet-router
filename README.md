@@ -96,3 +96,13 @@ roles:
 
 The source also contains a runner that splits one model over several machines. It only shows up when
 fleet-engine is installed, which is not part of this repository.
+
+## License
+
+Copyright (C) 2026 Tevfik Kadıoğlu.
+
+fleet-router is free software under the [GNU Affero General Public License v3.0](LICENSE): you may use, change
+and share it; if you run a changed version as a service for others, you must offer them its source.
+
+To use it without those obligations (for example inside a closed product or service), a commercial license is
+available: open an issue at https://github.com/tevfik/fleet-router/issues.
