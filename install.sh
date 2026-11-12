@@ -42,14 +42,18 @@ fetch() {
   fi
 }
 
-if [ "$version" = latest ] && [ -z "${FLEET_BASE:-}" ]; then   # {"tag_name":"v1.2.3",…} (Gitea or GitHub API)
+if [ "$version" = latest ] && [ -z "${FLEET_BASE:-}" ]; then
   case "$REPO" in
-    https://github.com/*) api="https://api.github.com/repos/${REPO#https://github.com/}/releases/latest" ;;
-    *) api="${REPO%/*/*}/api/v1/repos/${REPO#*://*/}/releases/latest" ;;
+    https://github.com/*)   # the redirect of /releases/latest names the tag (the API allows 60 requests an hour per address)
+      if command -v curl >/dev/null; then hdrs="$(curl -fsSI "$REPO/releases/latest" || true)"
+      else hdrs="$(wget --max-redirect=0 -S -O /dev/null "$REPO/releases/latest" 2>&1 || true)"; fi
+      version="$(printf '%s\n' "$hdrs" | tr -d '\r' | sed -n 's#^ *[Ll]ocation: .*/releases/tag/\([^ ]*\)$#\1#p' | head -n 1)" ;;
+    *)                      # Gitea API: {"tag_name":"v1.2.3",…}
+      api="${REPO%/*/*}/api/v1/repos/${REPO#*://*/}/releases/latest"
+      fetch "$api" "$tmp/latest.json" || { echo "cannot find the latest release ($api)" >&2; exit 1; }
+      version="$(tr -d '\n' < "$tmp/latest.json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')" ;;
   esac
-  fetch "$api" "$tmp/latest.json" || { echo "cannot find the latest release ($api)" >&2; exit 1; }
-  version="$(tr -d '\n' < "$tmp/latest.json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')"
-  [ -n "$version" ] || { echo "no release published yet" >&2; exit 1; }
+  [ -n "$version" ] || { echo "no release published yet ($REPO)" >&2; exit 1; }
 fi
 base="${FLEET_BASE:-$REPO/releases/download/$version}"
 name="fleet-linux-$arch"

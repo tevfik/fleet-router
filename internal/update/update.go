@@ -139,6 +139,9 @@ func Latest(ctx context.Context) (Release, error) {
 	if repo() == "" {
 		return r, ErrNoSource
 	}
+	if u, err := url.Parse(repo()); err == nil && u.Host != "" && isGitHub(u) {
+		return latestGitHub(ctx, repo())
+	}
 	u, err := apiURL(repo(), "/releases/latest")
 	if err != nil {
 		return r, err
@@ -153,6 +156,47 @@ func Latest(ctx context.Context) (Release, error) {
 	}
 	if r.Tag == "" {
 		return r, fmt.Errorf("no release published yet")
+	}
+	return r, nil
+}
+
+// latestGitHub reads the newest tag from the redirect of <repo>/releases/latest (…/releases/tag/<tag>): unlike
+// the API it is not limited to 60 requests an hour per address, which machines behind one NAT share. The
+// release notes come from the API when it answers; without them the update works all the same.
+func latestGitHub(ctx context.Context, repoURL string) (Release, error) {
+	var r Release
+	req, err := http.NewRequestWithContext(ctx, "GET", repoURL+"/releases/latest", nil)
+	if err != nil {
+		return r, err
+	}
+	req.Header.Set("User-Agent", "fleet-update")
+	cl := &http.Client{Timeout: time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return r, err
+	}
+	resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	if resp.StatusCode/100 != 3 || loc == "" {
+		return r, fmt.Errorf("%s/releases/latest: %s", repoURL, resp.Status)
+	}
+	i := strings.LastIndex(loc, "/releases/tag/")
+	if i < 0 {
+		return r, fmt.Errorf("no release published yet")
+	}
+	tag, err := url.PathUnescape(loc[i+len("/releases/tag/"):])
+	if err != nil || tag == "" {
+		return r, fmt.Errorf("bad release redirect %q", loc)
+	}
+	r.Tag = tag
+	if u, err := apiURL(repoURL, "/releases/tags/"+url.PathEscape(tag)); err == nil {
+		if resp, err := get(ctx, u); err == nil {
+			var notes Release
+			if json.NewDecoder(resp.Body).Decode(&notes) == nil {
+				r.Body = notes.Body
+			}
+			resp.Body.Close()
+		}
 	}
 	return r, nil
 }

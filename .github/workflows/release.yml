@@ -31,4 +31,4 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/fleet-linux-amd64 dist/fleet-linux-arm64 dist/SHA256SUMS --verify-tag --notes-from-tag
+        run: gh release create "$GITHUB_REF_NAME" dist/fleet-linux-amd64 dist/fleet-linux-arm64 dist/SHA256SUMS --verify-tag --notes-from-tag --title "fleet-router $GITHUB_REF_NAME"

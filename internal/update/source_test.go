@@ -89,13 +89,19 @@ func TestSource_UpdateFromGitHub(t *testing.T) {
 	bin := []byte("#!/bin/sh\necho new fleet\n")
 	sum := sha256.Sum256(bin)
 	name := "fleet-" + runtime.GOOS + "-" + runtime.GOARCH
-	var tokenSeen atomic.Bool
+	var tokenSeen, apiLimited atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "" {
 			tokenSeen.Store(true)
 		}
 		switch r.URL.Path {
-		case "/repos/someone/fleet/releases/latest":
+		case "/someone/fleet/releases/latest": // the web redirect, not the rate-limited API
+			http.Redirect(w, r, "/someone/fleet/releases/tag/v9.9.9", http.StatusFound)
+		case "/repos/someone/fleet/releases/tags/v9.9.9":
+			if apiLimited.Load() {
+				http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+				return
+			}
 			fmt.Fprint(w, `{"tag_name":"v9.9.9","body":"new"}`)
 		case "/someone/fleet/releases/download/v9.9.9/" + name:
 			w.Write(bin)
@@ -112,8 +118,13 @@ func TestSource_UpdateFromGitHub(t *testing.T) {
 	t.Setenv("FLEET_REPO", srv.URL+"/someone/fleet")
 
 	rel, err := Latest(context.Background())
-	if err != nil || rel.Tag != "v9.9.9" {
+	if err != nil || rel.Tag != "v9.9.9" || rel.Body != "new" {
 		t.Fatalf("Latest = %+v %v", rel, err)
+	}
+	// the API is rate-limited (60 an hour per address, shared behind a NAT): the update still finds the release
+	apiLimited.Store(true)
+	if r2, err := Latest(context.Background()); err != nil || r2.Tag != "v9.9.9" {
+		t.Fatalf("Latest with the API rate-limited = %+v %v", r2, err)
 	}
 	exe := filepath.Join(t.TempDir(), "fleet")
 	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
@@ -150,5 +161,19 @@ func TestSource_GiteaStillGetsToken(t *testing.T) {
 	}
 	if a, _ := auth.Load().(string); a != "token private-gitea-token" {
 		t.Errorf("Authorization = %q", a)
+	}
+}
+
+// No release yet: GitHub's /releases/latest answers 404 (no redirect), which says so instead of a raw status.
+func TestSource_GitHubNoRelease(t *testing.T) {
+	isolateUpdate(t)
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	defer func(h, a string) { githubHost, githubAPI = h, a }(githubHost, githubAPI)
+	githubHost, githubAPI = u.Host, srv.URL
+	t.Setenv("FLEET_REPO", srv.URL+"/someone/fleet")
+	if _, err := Latest(context.Background()); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Fatalf("err = %v", err)
 	}
 }
