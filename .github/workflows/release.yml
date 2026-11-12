@@ -1,0 +1,34 @@
+# Pushing a version tag (git tag -a v1.2.3 -m "notes" && git push origin v1.2.3) builds both Linux architectures and
+# publishes a GitHub release with fleet-linux-amd64, fleet-linux-arm64 and SHA256SUMS: what `fleet update` and
+# install.sh download.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # releases live on GitHub; a mirror of this repository elsewhere does not publish
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the binary reports the tag as its version
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test -short ./...
+      - name: Build
+        run: make release
+      - name: The binary knows its version
+        run: test "$(dist/fleet-linux-amd64 version)" = "fleet ${GITHUB_REF_NAME}"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/fleet-linux-amd64 dist/fleet-linux-arm64 dist/SHA256SUMS --verify-tag --notes-from-tag

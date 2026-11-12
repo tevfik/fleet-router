@@ -1,0 +1,11 @@
+/fleet
+fleet-*
+*.tmp
+dist/
+build/
+fleet-engine
+results/
+ext.mod
+ext.sum
+cmd/fleet/modules_ext.go
+/bin/

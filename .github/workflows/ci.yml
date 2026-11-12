@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Check & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: go vet
+        run: go vet ./...
+      - name: Tests (race detector)
+        run: CGO_ENABLED=1 go test -race -short ./...
+      - name: Tests without the runner side
+        run: FLEET_RUNNER=0 go test -short ./...
+
+  e2e:
+    name: Real model servers
+    runs-on: ubuntu-latest
+    env:
+      LLAMA_CPP: b12319 # llama.cpp release with a CPU build for linux x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Start two tiny model servers (llama.cpp on CPU)
+        run: |
+          set -euo pipefail
+          mkdir -p ~/e2e && cd ~/e2e
+          curl -fsSL "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_CPP/llama-$LLAMA_CPP-bin-ubuntu-x64.tar.gz" | tar xz
+          curl -fsSL -o chat.gguf https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf
+          curl -fsSL -o embed.gguf https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/resolve/main/all-MiniLM-L6-v2-Q4_K_M.gguf
+          cd "llama-$LLAMA_CPP"
+          export LD_LIBRARY_PATH=$PWD
+          nohup ./llama-server -m ../chat.gguf --alias tiny-chat --port 8080 -c 2048 > ../chat.log 2>&1 &
+          nohup ./llama-server -m ../embed.gguf --alias tiny-embed --embedding --port 8081 > ../embed.log 2>&1 &
+          for i in $(seq 60); do
+            if curl -sf localhost:8080/health && curl -sf localhost:8081/health; then exit 0; fi
+            sleep 2
+          done
+          cat ../chat.log ../embed.log
+          exit 1
+      - name: ssh to localhost (for the tunnel test; it is skipped when this cannot be set up)
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+          command -v sshd >/dev/null || sudo apt-get install -y -qq openssh-server || true
+          sudo systemctl start ssh 2>/dev/null || sudo service ssh start 2>/dev/null || true
+          if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 localhost true; then
+            echo "FLEET_E2E_SSH_HOST=localhost" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no ssh to localhost: the ssh tunnel test is skipped"
+          fi
+      - name: Build fleet
+        run: make build
+      - name: End-to-end tests
+        env:
+          FLEET_E2E_CHAT_URL: http://127.0.0.1:8080/v1
+          FLEET_E2E_CHAT_MODEL: tiny-chat
+          FLEET_E2E_EMBED_URL: http://127.0.0.1:8081/v1
+          FLEET_E2E_EMBED_MODEL: tiny-embed
+        run: FLEET_E2E_BIN=$PWD/fleet go test -count=1 -tags e2e -v ./test/e2e

@@ -1,0 +1,78 @@
+{
+  "schema": "fleet-engine-caps/v1",
+  "ring_protocol": {
+    "major": 101,
+    "minor": 0,
+    "patch": 6
+  },
+  "stage_protocol": {
+    "magic": "FSP1",
+    "version": 1
+  },
+  "ring_features": [
+    {
+      "bit": 0,
+      "mask": 1,
+      "c_name": "RING_FEAT_WIRE_F16",
+      "go_name": "FeatWireF16",
+      "cap": "wire.f16",
+      "since_patch": 2,
+      "description": "F16 / Q8_0 activations on the wire (SET_TENSOR cache_flag bits 1/2 and GET_TENSOR_X hdr.pad bit 0)"
+    },
+    {
+      "bit": 1,
+      "mask": 2,
+      "c_name": "RING_FEAT_ASYNC_HASH",
+      "go_name": "FeatAsyncHash",
+      "cap": "async.hash",
+      "since_patch": 2,
+      "description": "SET_TENSOR_HASH_ASYNC fire-and-forget hash cache swap"
+    },
+    {
+      "bit": 2,
+      "mask": 4,
+      "c_name": "RING_FEAT_ASYNC_COPY",
+      "go_name": "FeatAsyncCopy",
+      "cap": "async.copy",
+      "since_patch": 2,
+      "description": "COPY_TENSOR_ASYNC fire-and-forget copy between devices of the same worker"
+    },
+    {
+      "bit": 3,
+      "mask": 8,
+      "c_name": "RING_FEAT_STATE_SNAP",
+      "go_name": "FeatStateSnap",
+      "cap": "state.snap",
+      "since_patch": 3,
+      "description": "STATE_SNAP_SAVE / _RESTORE / _DROP: recurrent-state checkpoints stay on the worker"
+    },
+    {
+      "bit": 4,
+      "mask": 16,
+      "c_name": "RING_FEAT_PEER_FWD",
+      "go_name": "FeatPeerFwd",
+      "cap": "peer.fwd",
+      "since_patch": 4,
+      "description": "PEER_FORWARD / PEER_EXPECT (+ PEER_PUT / PEER_ABORT on the peer port); worker-to-worker chain"
+    },
+    {
+      "bit": 5,
+      "mask": 32,
+      "c_name": "RING_FEAT_NO_STORE",
+      "go_name": "FeatNoStore",
+      "cap": "no.store",
+      "since_patch": 5,
+      "description": "Negative bit: worker keeps no weights by hash (no cache dir, no shard index)"
+    },
+    {
+      "bit": 6,
+      "mask": 64,
+      "c_name": "RING_FEAT_SESSION",
+      "go_name": "FeatSession",
+      "cap": "session.resume",
+      "since_patch": 6,
+      "description": "SESSION_ATTACH / SESSION_CLOSE: lost connection resumes with exactly-once command replay"
+    }
+  ]
+}
+
