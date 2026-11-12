@@ -8,7 +8,7 @@
 #   --service       user install + a systemd *user* service (starts the daemon)
 #   --version vX.Y  a specific release (default: latest)
 # Env: FLEET_BASE (release base URL), FLEET_DIR (target directory),
-#      FLEET_TOKEN (Gitea access token — required while the repository is private; it is also saved as
+#      FLEET_TOKEN (only for a private Gitea repository given in FLEET_REPO; it is also saved as
 #      ~/.config/fleet/update_token so `fleet update` and the daemon's auto-update can authenticate)
 set -eu
 

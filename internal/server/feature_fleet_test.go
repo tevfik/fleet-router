@@ -217,13 +217,13 @@ func flChat(t *testing.T, base, model string, hdr map[string]string) (int, []byt
 }
 
 // flWait polls cond for up to 3 s.
+// flWait polls cond for up to 30 s (a small CI machine under -race runs the benchmark for several seconds).
 func flWait(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	for i := 0; i < 300; i++ {
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		if cond() {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }
