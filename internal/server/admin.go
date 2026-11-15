@@ -332,6 +332,8 @@ func (s *Server) Handler() http.Handler {
 			Group     *config.Group `json:"group"`
 			FleetPort *int          `json:"fleet_port"`
 			Stall     *string       `json:"stall"`
+			Key       *string       `json:"key"`
+			KeyEnv    *string       `json:"key_env"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Name == "" {
 			httpErr(w, 400, "name is required")
@@ -362,6 +364,12 @@ func (s *Server) Handler() http.Handler {
 				}
 				if in.Stall != nil {
 					eps[i].Stall = *in.Stall
+				}
+				if in.Key != nil {
+					eps[i].Key = *in.Key
+				}
+				if in.KeyEnv != nil {
+					eps[i].KeyEnv = *in.KeyEnv
 				}
 				if in.Caps != nil { // empty list = go back to automatic detection
 					eps[i].Caps = *in.Caps
@@ -418,6 +426,12 @@ func (s *Server) Handler() http.Handler {
 					}
 				}
 				eps = keep
+			}
+		}
+		for i := range in.Add {
+			if in.Add[i].WriteKey != "" {
+				in.Add[i].Key = in.Add[i].WriteKey
+				in.Add[i].WriteKey = ""
 			}
 		}
 		cfg.Endpoints = append(eps, in.Add...)

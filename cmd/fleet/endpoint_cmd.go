@@ -51,13 +51,25 @@ func cmdEndpoint(args []string) error {
 		ctx := fs.Int("ctx", 0, "context tokens the server runs with")
 		slots := fs.Int("slots", 0, "concurrent requests it handles (0: unlimited)")
 		tags := fs.String("tags", "", "comma-separated tags")
-		if err := fs.Parse(flagsFirst(args, "model", "node", "ctx", "slots", "tags")); err != nil {
+		key := fs.String("key", "", "API key (Bearer token) to send when querying the endpoint")
+		keyEnv := fs.String("key-env", "", "environment variable or .env key holding the API key")
+		if err := fs.Parse(flagsFirst(args, "model", "node", "ctx", "slots", "tags", "key", "key-env")); err != nil {
 			return err
 		}
 		if fs.NArg() != 2 {
-			return fmt.Errorf("usage: fleet endpoint add <name> <url> [--model M] [--node N] [--ctx N] [--slots N] [--tags a,b]   (url like http://host:port/v1)")
+			return fmt.Errorf("usage: fleet endpoint add <name> <url> [--model M] [--node N] [--ctx N] [--slots N] [--tags a,b] [--key K] [--key-env ENV]   (url like http://host:port/v1)")
 		}
-		ep := config.Endpoint{Name: fs.Arg(0), URL: fs.Arg(1), Node: *node, Model: *model, Ctx: *ctx, Slots: *slots}
+		ep := config.Endpoint{
+			Name:     fs.Arg(0),
+			URL:      fs.Arg(1),
+			Node:     *node,
+			Model:    *model,
+			Ctx:      *ctx,
+			Slots:    *slots,
+			Key:      *key,
+			WriteKey: *key,
+			KeyEnv:   *keyEnv,
+		}
 		if ep.Model == "" {
 			ep.Model = ep.Name
 		}

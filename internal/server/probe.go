@@ -348,7 +348,7 @@ func (s *Server) post(ctx context.Context, e *config.Endpoint, url string, body 
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("http %d: %s", resp.StatusCode, short(errMessage(b)))
+		return probeHTTPError(resp.StatusCode, b, e)
 	}
 	return json.Unmarshal(b, out)
 }
@@ -393,7 +393,8 @@ func (s *Server) probeStream(ctx context.Context, e *config.Endpoint, base strin
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return 0, 0, false, fmt.Errorf("http %d", resp.StatusCode)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return 0, 0, false, probeHTTPError(resp.StatusCode, b, e)
 	}
 	var first, last time.Time
 	chunks, usage := 0, 0
@@ -560,4 +561,21 @@ func errMessage(b []byte) string {
 		}
 	}
 	return strings.TrimSpace(string(b))
+}
+
+func probeHTTPError(status int, body []byte, e *config.Endpoint) error {
+	msg := short(errMessage(body))
+	if msg == "" {
+		msg = http.StatusText(status)
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		if e.APIKey() == "" {
+			return fmt.Errorf("http %d: %s (endpoint requires an API key; set --key or --key-env on the endpoint)", status, msg)
+		}
+		return fmt.Errorf("http %d: %s (authentication failed: check the key provided via %s)", status, msg, e.KeySource())
+	}
+	if msg != "" {
+		return fmt.Errorf("http %d: %s", status, msg)
+	}
+	return fmt.Errorf("http %d", status)
 }

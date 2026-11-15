@@ -22,7 +22,56 @@ func TestEndpointCommands(t *testing.T) {
 	contains(t, out, "endpoint w-qwen registered")
 	out = runOK(t, func() error { return cmdEndpoint(nil) })
 	contains(t, out, "ENDPOINT", "w-qwen", "qwen.gguf", "8k", "fast,gpu", "caps guessed from the name")
-	_, _, err := run(t, func() error { return cmdEndpoint([]string{"add", "x"}) })
+
+	// Test adding endpoint with --key and --key-env
+	out = runOK(t, func() error {
+		return cmdEndpoint([]string{"add", "sec-ep", "http://127.0.0.1:1/v1", "--key", "sk-secret123", "--key-env", "SEC_ENV"})
+	})
+	contains(t, out, "endpoint sec-ep registered")
+
+	cl, err := mustClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cl.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secEp *config.Endpoint
+	for _, ep := range cfg.Endpoints {
+		if ep.Name == "sec-ep" {
+			secEp = &ep
+			break
+		}
+	}
+	if secEp == nil {
+		t.Fatal("endpoint sec-ep not found in config")
+	}
+	if secEp.Key != "" {
+		t.Fatalf("expected Key to not be exposed via API, got %q", secEp.Key)
+	}
+	if secEp.KeyEnv != "SEC_ENV" {
+		t.Fatalf("expected KeyEnv SEC_ENV, got %q", secEp.KeyEnv)
+	}
+	diskCfg, err := config.Load(config.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diskSecEp *config.Endpoint
+	for _, ep := range diskCfg.Endpoints {
+		if ep.Name == "sec-ep" {
+			diskSecEp = &ep
+			break
+		}
+	}
+	if diskSecEp == nil {
+		t.Fatal("sec-ep not found in disk config")
+	}
+	if diskSecEp.Key != "sk-secret123" {
+		t.Fatalf("expected disk Key sk-secret123, got %q", diskSecEp.Key)
+	}
+	runOK(t, func() error { return cmdEndpoint([]string{"rm", "sec-ep"}) })
+	_, _, err = run(t, func() error { return cmdEndpoint([]string{"add", "x"}) })
 	wantErr(t, err, "usage: fleet endpoint add")
 
 	// a role that names the endpoint blocks its removal, with the role named; --mend-roles mends it

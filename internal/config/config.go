@@ -40,6 +40,7 @@ type Endpoint struct {
 	ModelSHA256 string  `yaml:"model_sha256,omitempty" json:"model_sha256,omitempty"`
 	KeyEnv      string  `yaml:"key_env,omitempty" json:"key_env,omitempty"`
 	Key         string  `yaml:"key,omitempty" json:"-"`
+	WriteKey    string  `yaml:"-" json:"key,omitempty"`                 // used only when registering/setting an endpoint via the API
 	Kind        string  `yaml:"kind,omitempty" json:"kind,omitempty"`   // chat (default) | embed
 	Probe       string  `yaml:"probe,omitempty" json:"probe,omitempty"` // models (default) | chat
 	Ctx         int     `yaml:"ctx,omitempty" json:"ctx,omitempty"`
@@ -1122,7 +1123,21 @@ func (e *Endpoint) APIKey() string {
 	if e.KeyEnv != "" {
 		return Secret(e.KeyEnv)
 	}
-	return e.Key
+	if e.Key != "" {
+		return e.Key
+	}
+	return e.WriteKey
+}
+
+// KeySource describes where the endpoint's API key comes from (for error messages and diagnosis).
+func (e *Endpoint) KeySource() string {
+	if e.KeyEnv != "" {
+		return "key_env " + e.KeyEnv
+	}
+	if e.Key != "" || e.WriteKey != "" {
+		return "key"
+	}
+	return "none"
 }
 
 // AutoUpdateOn reports whether the daemon should update itself (on unless auto_update: false).
