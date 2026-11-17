@@ -104,9 +104,11 @@ func startFleet(t *testing.T, listen, body string, extraEnv ...string) *fleet {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
 	t.Cleanup(func() {
 		cancel()
-		_ = cmd.Wait()
+		<-exited
 		if t.Failed() {
 			t.Logf("fleet serve (%s) log:\n%s", listen, logBuf.String())
 		}
@@ -115,6 +117,11 @@ func startFleet(t *testing.T, listen, body string, extraEnv ...string) *fleet {
 		if r, err := http.Get(f.base + "/healthz"); err == nil && r.StatusCode == 200 {
 			r.Body.Close()
 			return f
+		}
+		select {
+		case <-exited:
+			t.Fatalf("fleet serve exited:\n%s", logBuf.String())
+		default:
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("fleet serve did not come up:\n%s", logBuf.String())
