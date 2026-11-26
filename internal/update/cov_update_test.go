@@ -353,6 +353,47 @@ func TestEnsureEngineMatchingAndErrors(t *testing.T) {
 	}
 }
 
+func TestCheckEngine(t *testing.T) {
+	fileName := fmt.Sprintf("fleet-engine-%s-%s-cpu.xz", runtime.GOOS, runtime.GOARCH)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/packages/fleet/generic/fleet-engine/") && strings.HasSuffix(r.URL.Path, "/files") {
+			fmt.Fprintf(w, `[{"name": %q, "size": 1000, "sha256": "abc"}]`, fileName)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	t.Setenv("FLEET_ENGINE_REPO", srv.URL+"/fleet/fleet")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	os.MkdirAll(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "fleet"), 0o700)
+
+	c, err := CheckEngine(context.Background(), false)
+	if err != nil {
+		t.Fatalf("CheckEngine: %v", err)
+	}
+	if c.Installed || c.File.Name != fileName || c.Version != engineVersion() {
+		t.Fatalf("unexpected CheckEngine result: %+v", c)
+	}
+
+	_ = os.WriteFile(engineStampPath(), []byte(engineVersion()+" "+fileName+"\n"), 0o644)
+	c, err = CheckEngine(context.Background(), false)
+	if err != nil {
+		t.Fatalf("CheckEngine installed: %v", err)
+	}
+	if !c.Installed {
+		t.Fatalf("expected Installed=true, got %+v", c)
+	}
+
+	c, err = CheckEngine(context.Background(), true)
+	if err != nil {
+		t.Fatalf("CheckEngine force: %v", err)
+	}
+	if c.Installed {
+		t.Fatalf("expected Installed=false with force=true, got %+v", c)
+	}
+}
+
 func TestLatestAndApplyErrors(t *testing.T) {
 	// 1. Latest with bad repo URL
 	t.Setenv("FLEET_REPO", "://bad-url")

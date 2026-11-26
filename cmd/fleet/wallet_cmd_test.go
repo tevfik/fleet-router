@@ -25,6 +25,7 @@ func captureOutput(f func() error) (string, error) {
 }
 
 func TestCmdWalletAddress(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	out, err := captureOutput(func() error {
 		return cmdWallet([]string{"address"})
 	})
@@ -40,6 +41,7 @@ func TestCmdWalletAddress(t *testing.T) {
 }
 
 func TestCmdWalletStatusNoDeposit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	// credits cannot be made out of nothing: there is no deposit command
 	if err := cmdWallet([]string{"deposit", "1250"}); err == nil || !strings.Contains(err.Error(), "unknown wallet command") {
 		t.Fatalf("deposit: %v", err)
@@ -58,6 +60,7 @@ func TestCmdWalletStatusNoDeposit(t *testing.T) {
 }
 
 func TestCmdShareLifecycle(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	// 1. Enable sharing
 	onOut, err := captureOutput(func() error {
 		return cmdShare([]string{"on", "--price", "2000", "--models", "deepseek-v4,qwen2.5"})

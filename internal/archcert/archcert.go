@@ -98,15 +98,19 @@ func (c *Cert) Warn(arch, wire string) string {
 	case Failed:
 		return fmt.Sprintf("architecture %q FAILED the ring correctness gate (see arch-cert.json): a split may change the output", arch)
 	}
+	var msgs []string
 	if wire == "f16" || wire == "fp8" {
 		switch {
 		case e.LossyWireOK == nil:
-			return fmt.Sprintf("the %s wire was never gated on architecture %q: it can change the output (f32 is exact)", wire, arch)
+			msgs = append(msgs, fmt.Sprintf("the %s wire was never gated on architecture %q: it can change the output (f32 is exact)", wire, arch))
 		case !*e.LossyWireOK:
-			return fmt.Sprintf("the %s wire FAILED the gate on architecture %q: use the f32 wire", wire, arch)
+			msgs = append(msgs, fmt.Sprintf("the %s wire FAILED the gate on architecture %q: use the f32 wire", wire, arch))
 		}
 	}
-	return ""
+	if envs := c.RequiredEnv(arch); len(envs) > 0 {
+		msgs = append(msgs, fmt.Sprintf("architecture %q requires %s on every machine to pass the ring correctness gate", arch, strings.Join(envs, " ")))
+	}
+	return strings.Join(msgs, "; ")
 }
 
 // RequiredEnv is the KEY=VALUE list the architecture's gate result depends on (nil: none). fleet sets it on the master

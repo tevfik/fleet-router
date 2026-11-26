@@ -118,3 +118,28 @@ func TestParseDFlashTargetLayers(t *testing.T) {
 		t.Fatalf("empty TargetLayersCSV() = %q, want empty", got)
 	}
 }
+
+func TestParsePrismMLQuants(t *testing.T) {
+	for _, tc := range []struct {
+		ftype int
+		want  string
+	}{
+		{39, "NVFP4"},
+		{40, "Q1_0"},
+		{41, "Q2_0"}, // llama_ftype: file_type 41 is Q2_0 (ggml tensor type 41 is Q1_0)
+		{141, "PQ2_0"},
+		{142, "PQ2_0"},
+		{143, "PTQ1_0"},
+	} {
+		m, err := Parse(build(
+			kv{"general.architecture", 8, "qwen35"},
+			kv{"general.file_type", 4, tc.ftype},
+		))
+		if err != nil {
+			t.Fatalf("ftype %d: %v", tc.ftype, err)
+		}
+		if m.Quant != tc.want {
+			t.Errorf("ftype %d: Quant = %q, want %q", tc.ftype, m.Quant, tc.want)
+		}
+	}
+}

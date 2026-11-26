@@ -42,10 +42,11 @@ func TestWarn(t *testing.T) {
 	f := false
 	tr := true
 	c := &Cert{Archs: map[string]Entry{
-		"good":  {Status: Certified},
-		"lossy": {Status: Certified, LossyWireOK: &f},
-		"fine":  {Status: Certified, LossyWireOK: &tr},
-		"bad":   {Status: Failed},
+		"good":    {Status: Certified},
+		"lossy":   {Status: Certified, LossyWireOK: &f},
+		"fine":    {Status: Certified, LossyWireOK: &tr},
+		"envonly": {Status: Certified, LossyWireOK: &tr, RequiresEnv: "GGML_CUDA_DISABLE_FUSION=1"},
+		"bad":     {Status: Failed},
 	}}
 	for _, tc := range []struct {
 		arch, wire, want string // want: substring of the warning, "" = none
@@ -55,6 +56,8 @@ func TestWarn(t *testing.T) {
 		{"good", "f16", "never gated"},
 		{"lossy", "fp8", "FAILED the gate"},
 		{"fine", "f16", ""},
+		{"envonly", "", "GGML_CUDA_DISABLE_FUSION=1"},
+		{"envonly", "f16", "GGML_CUDA_DISABLE_FUSION=1"},
 		{"bad", "", "FAILED the ring"},
 		{"new", "", "has not passed"},
 		{"", "", "unknown"},

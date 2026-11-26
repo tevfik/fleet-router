@@ -120,6 +120,9 @@ func sortInts(a []int) {
 	}
 }
 
+// parseModels reads the model IDs of a /v1/models answer. llama-server answers with both a `data`
+// and a `models` array listing the same models, so IDs are de-duplicated: first appearance wins,
+// the order is kept.
 func parseModels(b []byte) []string {
 	var d struct {
 		Data []struct {
@@ -134,14 +137,22 @@ func parseModels(b []byte) []string {
 		return nil
 	}
 	var ms []string
+	seen := map[string]bool{}
+	add := func(m string) {
+		if m == "" || seen[m] {
+			return
+		}
+		seen[m] = true
+		ms = append(ms, m)
+	}
 	for _, m := range d.Data {
-		ms = append(ms, m.ID)
+		add(m.ID)
 	}
 	for _, m := range d.Models {
 		if m.ID != "" {
-			ms = append(ms, m.ID)
-		} else if m.Name != "" {
-			ms = append(ms, m.Name)
+			add(m.ID)
+		} else {
+			add(m.Name)
 		}
 	}
 	return ms
@@ -321,17 +332,12 @@ func MakePlan(cfg *config.Config, found []Found, includeEmbed bool) Plan {
 				pl.Skip = append(pl.Skip, label+" (embedding/reranker)")
 				continue
 			}
-			dup := false
-			for _, e := range cfg.Endpoints {
-				sameHost := e.Node == f.Node
-				samePort := urlHostPort(e.URL) == remote || e.Remote == remote
-				if e.Model == m && sameHost && samePort {
-					dup = true
-					break
-				}
-			}
-			if dup {
+			if hasEndpoint(cfg.Endpoints, f.Node, remote, m) {
 				pl.Known = append(pl.Known, label)
+				continue
+			}
+			if hasEndpoint(pl.Add, f.Node, remote, m) { // the same endpoint found twice (an SSH host listed twice, or a model in both arrays)
+				pl.Skip = append(pl.Skip, label+" (duplicate)")
 				continue
 			}
 			ep := config.Endpoint{Name: f.Node + "-" + config.Slug(m), Node: f.Node, Model: m}
@@ -357,6 +363,23 @@ func MakePlan(cfg *config.Config, found []Found, includeEmbed bool) Plan {
 func planHas(es []config.Endpoint, name string) bool {
 	for _, e := range es {
 		if e.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// sameEndpoint reports whether e already covers exactly this model on this node at this port
+// (127.0.0.1:<port>, reached over SSH or directly).
+func sameEndpoint(e config.Endpoint, node, remote, model string) bool {
+	return e.Model == model && e.Node == node &&
+		(urlHostPort(e.URL) == remote || e.Remote == remote)
+}
+
+// hasEndpoint reports whether any endpoint in es covers this node, port and model.
+func hasEndpoint(es []config.Endpoint, node, remote, model string) bool {
+	for _, e := range es {
+		if sameEndpoint(e, node, remote, model) {
 			return true
 		}
 	}

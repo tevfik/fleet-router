@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/tevfik/fleet-router/internal/client"
 	"github.com/tevfik/fleet-router/internal/config"
 	"github.com/tevfik/fleet-router/internal/server"
+	"github.com/tevfik/fleet-router/internal/update"
 )
 
 // ---- fakes ----
@@ -475,12 +477,12 @@ func TestUpdateRemotesWithoutSSH(t *testing.T) {
 	if err := c.Save(config.Path()); err != nil {
 		t.Fatal(err)
 	}
-	out := runOK(t, func() error { updateRemotes(true, false); return nil })
+	out := runOK(t, func() error { updateRemotes(true, false, false); return nil })
 	if strings.TrimSpace(out) != "no machines reached over SSH" {
 		t.Fatalf("updateRemotes:\n%s", out)
 	}
 	os.WriteFile(config.Path(), []byte("endpoints: [ {name: x} ]\n"), 0o600) // invalid: no url
-	out = runOK(t, func() error { updateRemotes(false, false); return nil })
+	out = runOK(t, func() error { updateRemotes(false, false, false); return nil })
 	contains(t, out, "could not read the configuration")
 }
 
@@ -981,12 +983,58 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestEngineGuardKeepsABinaryThatHasTheEngine(t *testing.T) {
-	if engineGuard(false) != nil {
-		t.Fatal("the plain build updates as before")
+func TestUpdateDelegatesToEngineAndPlainOverride(t *testing.T) {
+	isolate(t)
+	fakeReleases(t, "v9.9.9", "Plain release")
+	old := version
+	version = "v1.0.0"
+	t.Cleanup(func() { version = old })
+
+	fileName := fmt.Sprintf("fleet-engine-%s-%s-cpu.xz", runtime.GOOS, runtime.GOARCH)
+	es := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/packages/fleet/generic/fleet-engine/") && strings.HasSuffix(r.URL.Path, "/files") {
+			fmt.Fprintf(w, `[{"name": %q, "size": 1000, "sha256": "abc"}]`, fileName)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer es.Close()
+	t.Setenv("FLEET_ENGINE_REPO", es.URL+"/fleet/fleet")
+
+	// Engine-bearing binary with --check delegates to engine check (not plain release).
+	out := runOK(t, func() error { return cmdUpdateWithEngine([]string{"--check"}, true) })
+	contains(t, out, "fleet engine "+update.PinnedEngineVersion()+" ("+fileName+") available")
+
+	// --check --all also runs updateRemotes after delegating to engine check.
+	out = runOK(t, func() error { return cmdUpdateWithEngine([]string{"--check", "--all"}, true) })
+	contains(t, out, "fleet engine "+update.PinnedEngineVersion()+" ("+fileName+") available", "no machines reached over SSH")
+
+	// --plain --check bypasses engine delegation and checks plain releases.
+	out = runOK(t, func() error { return cmdUpdateWithEngine([]string{"--plain", "--check"}, true) })
+	contains(t, out, "fleet v1.0.0 → v9.9.9 available")
+
+	// Mark engine build already installed: fleet update delegates to EnsureEngine and reports up to date.
+	stamp := filepath.Join(filepath.Dir(config.Path()), "engine_installed")
+	if err := os.WriteFile(stamp, []byte(update.PinnedEngineVersion()+" "+fileName+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if err := engineGuard(true); err == nil || !strings.Contains(err.Error(), "llama-ring engine") {
-		t.Fatalf("%v", err)
+	out = runOK(t, func() error { return cmdUpdateWithEngine([]string{"--check"}, true) })
+	contains(t, out, "fleet engine "+update.PinnedEngineVersion()+" ("+fileName+") is up to date")
+
+	out = runOK(t, func() error { return cmdUpdateWithEngine([]string{}, true) })
+	contains(t, out, "✓ already the engine build "+update.PinnedEngineVersion()+" "+fileName)
+
+	tag, err := updateOnceWithEngine(context.Background(), false, false, true)
+	if err != nil || tag != "" {
+		t.Fatalf("updateOnceWithEngine(engine, already installed) = (%q, %v), want (\"\", nil)", tag, err)
+	}
+
+	// updateRemoteCommand forwards --plain when requested.
+	if got := updateRemoteCommand(true, true, true); !strings.Contains(got, "fleet update --check --force --plain") {
+		t.Fatalf("updateRemoteCommand = %q", got)
+	}
+	if got := updateRemoteCommand(false, false, false); !strings.HasSuffix(got, "fleet update") {
+		t.Fatalf("updateRemoteCommand = %q", got)
 	}
 }
 

@@ -64,7 +64,90 @@ type Tensor struct {
 	Name   string
 	Offset int64 // from the start of the file
 	Size   int64
-	Shard  int // index of the file of a multi-file GGUF this tensor is in (0: the first or only file)
+	Type   uint32 // ggml quantization type ID
+	Shard  int    // index of the file of a multi-file GGUF this tensor is in (0: the first or only file)
+}
+
+// QuantInfo describes one ggml tensor quantization type: its name, block size (weights per block),
+// and block byte size (bytes per block).
+type QuantInfo struct {
+	Name      string
+	BlockSize int64
+	TypeSize  int64
+}
+
+// BPW returns the bits per weight of this quantization type (0 if unknown).
+func (q QuantInfo) BPW() float64 {
+	if q.BlockSize <= 0 || q.TypeSize <= 0 {
+		return 0
+	}
+	return float64(q.TypeSize*8) / float64(q.BlockSize)
+}
+
+var ggmlQuantTypes = map[uint32]QuantInfo{
+	0:   {Name: "F32", BlockSize: 1, TypeSize: 4},
+	1:   {Name: "F16", BlockSize: 1, TypeSize: 2},
+	2:   {Name: "Q4_0", BlockSize: 32, TypeSize: 18},
+	3:   {Name: "Q4_1", BlockSize: 32, TypeSize: 20},
+	6:   {Name: "Q5_0", BlockSize: 32, TypeSize: 22},
+	7:   {Name: "Q5_1", BlockSize: 32, TypeSize: 24},
+	8:   {Name: "Q8_0", BlockSize: 32, TypeSize: 34},
+	9:   {Name: "Q8_1", BlockSize: 32, TypeSize: 36},
+	10:  {Name: "Q2_K", BlockSize: 256, TypeSize: 84},
+	11:  {Name: "Q3_K", BlockSize: 256, TypeSize: 110},
+	12:  {Name: "Q4_K", BlockSize: 256, TypeSize: 144},
+	13:  {Name: "Q5_K", BlockSize: 256, TypeSize: 176},
+	14:  {Name: "Q6_K", BlockSize: 256, TypeSize: 210},
+	15:  {Name: "Q8_K", BlockSize: 256, TypeSize: 292},
+	16:  {Name: "IQ2_XXS", BlockSize: 256, TypeSize: 66},
+	17:  {Name: "IQ2_XS", BlockSize: 256, TypeSize: 74},
+	18:  {Name: "IQ3_XXS", BlockSize: 256, TypeSize: 98},
+	19:  {Name: "IQ1_S", BlockSize: 256, TypeSize: 50},
+	20:  {Name: "IQ4_NL", BlockSize: 32, TypeSize: 18},
+	21:  {Name: "IQ3_S", BlockSize: 256, TypeSize: 110},
+	22:  {Name: "IQ2_S", BlockSize: 256, TypeSize: 82},
+	23:  {Name: "IQ4_XS", BlockSize: 256, TypeSize: 136},
+	24:  {Name: "I8", BlockSize: 1, TypeSize: 1},
+	25:  {Name: "I16", BlockSize: 1, TypeSize: 2},
+	26:  {Name: "I32", BlockSize: 1, TypeSize: 4},
+	27:  {Name: "I64", BlockSize: 1, TypeSize: 8},
+	28:  {Name: "F64", BlockSize: 1, TypeSize: 8},
+	29:  {Name: "IQ1_M", BlockSize: 256, TypeSize: 56},
+	30:  {Name: "BF16", BlockSize: 1, TypeSize: 2},
+	34:  {Name: "TQ1_0", BlockSize: 256, TypeSize: 54},
+	35:  {Name: "TQ2_0", BlockSize: 256, TypeSize: 66},
+	39:  {Name: "MXFP4", BlockSize: 32, TypeSize: 17},
+	41:  {Name: "Q1_0", BlockSize: 128, TypeSize: 18}, // QK1_0 = 128 (ggml-common.h); the Bonsai-2.5 1-bit pack
+	42:  {Name: "Q2_0", BlockSize: 64, TypeSize: 18},  // QK2_0 = 64; the Bonsai-2.5 pack stock llama.cpp can run
+	142: {Name: "PQ2_0", BlockSize: 128, TypeSize: 34},
+	143: {Name: "PTQ1_0", BlockSize: 128, TypeSize: 28},
+}
+
+// GGMLQuantInfo returns the quantization metadata for a ggml tensor type ID.
+func GGMLQuantInfo(t uint32) (QuantInfo, bool) {
+	qi, ok := ggmlQuantTypes[t]
+	return qi, ok
+}
+
+// TensorBytes returns the byte size of a tensor with the given dimensions and ggml type ID (0 if unknown or empty).
+func TensorBytes(dims []uint64, ggmlType uint32) int64 {
+	if len(dims) == 0 {
+		return 0
+	}
+	qi, ok := GGMLQuantInfo(ggmlType)
+	if !ok || qi.BlockSize <= 0 || qi.TypeSize <= 0 {
+		return 0
+	}
+	d0 := int64(dims[0])
+	if d0 <= 0 {
+		return 0
+	}
+	blocks := (d0 + qi.BlockSize - 1) / qi.BlockSize
+	rows := int64(1)
+	for _, d := range dims[1:] {
+		rows *= int64(d)
+	}
+	return blocks * qi.TypeSize * rows
 }
 
 // Weights is every weight in the file, in bytes (the part of the file that is tensors).
@@ -437,6 +520,8 @@ func (c *reader) value(t uint32, keep bool) (n uint64, ok bool, s string, err er
 
 type tensor struct {
 	name string
+	dims []uint64
+	typ  uint32
 	off  uint64
 }
 
@@ -518,14 +603,15 @@ func parseHeader(r io.Reader) (*ggufHeader, error) {
 				vocabEmbd = int(dims[1])
 			}
 		}
-		if _, err := c.u32(); err != nil { // type
+		typ, err := c.u32() // type
+		if err != nil {
 			return nil, err
 		}
 		off, err := c.u64()
 		if err != nil {
 			return nil, err
 		}
-		ts = append(ts, tensor{name, off})
+		ts = append(ts, tensor{name: name, dims: dims, typ: typ, off: off})
 	}
 	align := int64(ints["general.alignment"])
 	if align <= 0 {
@@ -589,10 +675,13 @@ func (m *Model) addTensors(ts []tensor, dataStart, size int64, shard int) {
 		} else if size > 0 {
 			sz = size - dataStart - int64(t.off)
 		}
+		if sz == 0 && len(t.dims) > 0 {
+			sz = TensorBytes(t.dims, t.typ)
+		}
 		if sz < 0 {
 			sz = 0
 		}
-		m.Tensors = append(m.Tensors, Tensor{Name: t.name, Offset: dataStart + int64(t.off), Size: sz, Shard: shard})
+		m.Tensors = append(m.Tensors, Tensor{Name: t.name, Offset: dataStart + int64(t.off), Size: sz, Type: t.typ, Shard: shard})
 		if !m.Recurrent && RecurrentTensor(t.name) {
 			m.Recurrent = true
 		}

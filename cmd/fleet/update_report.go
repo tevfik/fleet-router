@@ -15,9 +15,12 @@ type updateResult struct {
 }
 
 var (
-	updatedRe = regexp.MustCompile(`✓ fleet (\S+) → (\S+)`)
-	currentRe = regexp.MustCompile(`fleet (\S+) is up to date`)
-	behindRe  = regexp.MustCompile(`fleet (\S+) → (\S+) available`)
+	updatedRe       = regexp.MustCompile(`✓ fleet (\S+) → (\S+)`)
+	currentRe       = regexp.MustCompile(`fleet (\S+) is up to date`)
+	behindRe        = regexp.MustCompile(`fleet (\S+) → (\S+) available`)
+	engineUpdatedRe = regexp.MustCompile(`✓ installed the engine build (\S+) (\S+)`)
+	engineCurrentRe = regexp.MustCompile(`(?:✓ already the engine build (\S+) (\S+)|fleet engine (\S+) \((\S+)\) is up to date)`)
+	engineBehindRe  = regexp.MustCompile(`fleet engine (\S+) \((\S+)\) available`)
 )
 
 // classifyUpdate reads what a machine's `fleet update` printed: updated (from → to), already current, behind (with
@@ -31,11 +34,24 @@ func classifyUpdate(host, out string, err error, check bool) updateResult {
 	case behindRe.MatchString(out):
 		m := behindRe.FindStringSubmatch(out)
 		r.State, r.Detail = "behind", m[1]+" → "+m[2]
+	case engineBehindRe.MatchString(out):
+		m := engineBehindRe.FindStringSubmatch(out)
+		r.State, r.Detail = "behind", m[1]+" ("+m[2]+")"
 	case updatedRe.MatchString(out):
 		m := updatedRe.FindStringSubmatch(out)
 		r.State, r.Detail = "updated", m[1]+" → "+m[2]
+	case engineUpdatedRe.MatchString(out):
+		m := engineUpdatedRe.FindStringSubmatch(out)
+		r.State, r.Detail = "updated", m[1]+" ("+m[2]+")"
 	case currentRe.MatchString(out):
 		r.State, r.Detail = "current", currentRe.FindStringSubmatch(out)[1]
+	case engineCurrentRe.MatchString(out):
+		m := engineCurrentRe.FindStringSubmatch(out)
+		ver := m[1]
+		if ver == "" {
+			ver = m[3]
+		}
+		r.State, r.Detail = "current", ver
 	case strings.Contains(out, "no fleet installed"):
 		r.State, r.Detail = "skipped", "no fleet installed on it (install.sh)"
 	case strings.Contains(out, "would kill") || strings.Contains(out, "open stream"):

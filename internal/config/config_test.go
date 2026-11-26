@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -159,5 +160,62 @@ func TestTunnelIdleSetting(t *testing.T) {
 	c.TunnelIdle = "15m"
 	if err := c.Validate(); err != nil {
 		t.Errorf("15m rejected: %v", err)
+	}
+}
+
+// The daemon's removal memory for peer models: a dismissed model is remembered per peer (the same model
+// at another peer is untouched), a dismissal is recorded once, and it survives Save/Load — that is what
+// keeps a deleted peer model from reappearing on every refresh.
+func TestDismissedPeerModels(t *testing.T) {
+	c := &Config{Name: "laptop", Roles: map[string]Role{}}
+	if c.PeerModelDismissed("bravo", "dino/gemma") {
+		t.Fatal("nothing dismissed yet")
+	}
+	c.DismissPeerModel("bravo", "dino/gemma")
+	c.DismissPeerModel("bravo", "dino/gemma") // a set, not a log
+	if len(c.DismissedPeers) != 1 {
+		t.Fatalf("recorded twice: %+v", c.DismissedPeers)
+	}
+	c.DismissPeerModel("victor", "dino/qwen")
+	if !c.PeerModelDismissed("bravo", "dino/gemma") || !c.PeerModelDismissed("victor", "dino/qwen") {
+		t.Fatal("a dismissal was lost")
+	}
+	// per-peer: gemma at victor and qwen at bravo are still importable
+	if c.PeerModelDismissed("victor", "dino/gemma") || c.PeerModelDismissed("bravo", "dino/qwen") {
+		t.Fatalf("dismissed_peers leaked across peers: %+v", c.DismissedPeers)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := c.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.DismissedPeers) != 2 || got.DismissedPeers[0].Peer != "bravo" || got.DismissedPeers[0].Ref != "dino/gemma" {
+		t.Fatalf("not persisted: %+v", got.DismissedPeers)
+	}
+	if !got.PeerModelDismissed("bravo", "dino/gemma") {
+		t.Fatal("lost across a save/load")
+	}
+	// dropping a peer forgets only its own dismissals
+	got.DropDismissedPeer("bravo")
+	if got.PeerModelDismissed("bravo", "dino/gemma") {
+		t.Fatalf("DropDismissedPeer left an entry behind: %+v", got.DismissedPeers)
+	}
+	if !got.PeerModelDismissed("victor", "dino/qwen") {
+		t.Fatal("DropDismissedPeer cleared another peer's dismissal")
+	}
+	// an older file (no such section) loads with an empty list
+	old := filepath.Join(t.TempDir(), "old.yaml")
+	if err := os.WriteFile(old, []byte("name: laptop\nendpoints: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c2, err := Load(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c2.DismissedPeers) != 0 {
+		t.Fatalf("phantom dismissals: %+v", c2.DismissedPeers)
 	}
 }

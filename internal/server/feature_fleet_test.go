@@ -511,6 +511,8 @@ func TestFleet_Peers_RemovePeerDropsItsModels(t *testing.T) {
 	a, _, _, _, up := flTwoFleets(t, nil)
 	cfg := a.Config()
 	cfg.Endpoints = append(cfg.Endpoints, config.Endpoint{Name: "own", Node: "laptop", URL: up.URL + "/v1", Model: "tiny"})
+	cfg.DismissPeerModel("bravo", "dino/gemma")
+	cfg.DismissPeerModel("charlie", "dino/gemma") // stale entry of a peer removed earlier
 	if err := a.SetConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -523,6 +525,12 @@ func TestFleet_Peers_RemovePeerDropsItsModels(t *testing.T) {
 	c := a.Config()
 	if len(c.Peers) != 0 || len(c.Endpoints) != 1 || c.Endpoints[0].Name != "own" {
 		t.Fatalf("after RemovePeer: %+v %+v", c.Peers, c.Endpoints)
+	}
+	if c.PeerModelDismissed("bravo", "dino/gemma") {
+		t.Fatalf("RemovePeer must forget the dismissed models of that peer: %+v", c.DismissedPeers)
+	}
+	if !c.PeerModelDismissed("charlie", "dino/gemma") {
+		t.Fatalf("RemovePeer must keep other peers' dismissals: %+v", c.DismissedPeers)
 	}
 }
 

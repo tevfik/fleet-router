@@ -17,26 +17,33 @@ import (
 	"github.com/tevfik/fleet-router/internal/update"
 )
 
-// engineGuard: a release carries the plain build only. Replacing a binary that has the llama-ring engine linked in
-// with it would take the runtime away from the machine without a word, so such a binary is left alone.
-func engineGuard(hasEngine bool) error {
-	if hasEngine {
-		return fmt.Errorf("this binary has the llama-ring engine linked in and releases carry the plain build only — update the engine with `fleet engine install` (or build one: make build-engine, then fleet setup install)")
-	}
-	return nil
+// updateOnce installs the newest release (or engine build when the llama-ring engine is linked in) if it is newer
+// than this binary; returns its version/tag, or "" when up to date.
+func updateOnce(ctx context.Context, force bool) (string, error) {
+	return updateOnceWithEngine(ctx, force, false, ringengine.Available())
 }
 
-// updateOnce installs the newest release if it is newer than this binary; returns its tag, or "" when up to date.
-func updateOnce(ctx context.Context, force bool) (string, error) {
+func updateOnceWithEngine(ctx context.Context, force, plain, hasEngine bool) (string, error) {
+	if hasEngine && !plain {
+		exe, err := setup.Exe()
+		if err != nil {
+			return "", err
+		}
+		msg, err := update.EnsureEngine(ctx, exe, "", force, nil)
+		if err != nil {
+			return "", err
+		}
+		if strings.HasPrefix(msg, "installed") {
+			return update.PinnedEngineVersion(), nil
+		}
+		return "", nil
+	}
 	rel, err := update.Latest(ctx)
 	if err != nil {
 		return "", err
 	}
 	if !update.Newer(rel.Tag, version, force) || (!force && update.Installed() == rel.Tag) {
 		return "", nil // up to date, or this very tag was already installed by us (see MarkInstalled)
-	}
-	if err := engineGuard(ringengine.Available()); err != nil {
-		return "", err
 	}
 	exe, err := setup.Exe()
 	if err != nil {
@@ -51,12 +58,17 @@ func updateOnce(ctx context.Context, force bool) (string, error) {
 }
 
 func cmdUpdate(args []string) error {
+	return cmdUpdateWithEngine(args, ringengine.Available())
+}
+
+func cmdUpdateWithEngine(args []string, hasEngine bool) error {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	check := fs.Bool("check", false, "only report whether a newer release exists")
 	force := fs.Bool("force", false, "also replace a dev/unreleased build")
 	rollback := fs.Bool("rollback", false, "go back to the version that was installed before the last update")
 	all := fs.Bool("all", false, "then run the same on every machine reached over SSH")
 	source := fs.Bool("source", false, "print where this build looks for releases")
+	plain := fs.Bool("plain", false, "replace an engine-bearing binary with a plain release build")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -69,7 +81,7 @@ func cmdUpdate(args []string) error {
 		return nil
 	}
 	if *all {
-		defer updateRemotes(*check, *force)
+		defer updateRemotes(*check, *force, *plain)
 	}
 	if *rollback {
 		exe, err := setup.Exe()
@@ -81,6 +93,41 @@ func cmdUpdate(args []string) error {
 		}
 		fmt.Printf("✓ previous version restored (it will not be installed again automatically: %s is skipped)\n", version)
 		restartService()
+		return nil
+	}
+	if hasEngine && !*plain {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		if *check {
+			c, err := update.CheckEngine(ctx, *force)
+			if err != nil {
+				return err
+			}
+			if c.Installed {
+				fmt.Printf("fleet engine %s (%s) is up to date\n", c.Version, c.File.Name)
+			} else {
+				fmt.Printf("fleet engine %s (%s) available: run `fleet update` (%s)\n", c.Version, c.File.Name, c.Why)
+			}
+			return nil
+		}
+		if kids := serviceChildren(); len(kids) > 0 && !*force {
+			return fmt.Errorf("the update restarts the fleet service, which would kill %d process(es) a deploy started inside it (a running model?):\n  %s\nrestart later, or pass --force to update anyway (they die; deploys made by this version survive restarts)", len(kids), strings.Join(kids, "\n  "))
+		}
+		if msg := hubStreamWarning(localHubStreams()); msg != "" && !*force {
+			return fmt.Errorf("%s\nrestart later, or pass --force to update anyway", msg)
+		}
+		exe, err := setup.Exe()
+		if err != nil {
+			return err
+		}
+		msg, err := update.EnsureEngine(ctx, exe, "", *force, func(s string) { fmt.Fprintln(os.Stderr, s) })
+		if err != nil {
+			return err
+		}
+		fmt.Println("✓ " + msg)
+		if strings.HasPrefix(msg, "installed") {
+			restartService()
+		}
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -106,7 +153,7 @@ func cmdUpdate(args []string) error {
 	if msg := hubStreamWarning(localHubStreams()); msg != "" && !*force {
 		return fmt.Errorf("%s\nrestart later, or pass --force to update anyway", msg)
 	}
-	tag, err := updateOnce(ctx, *force)
+	tag, err := updateOnceWithEngine(ctx, *force, *plain, hasEngine)
 	if err != nil {
 		return err
 	}
@@ -279,9 +326,23 @@ func engineRemotes(variant string, force bool, pin string) {
 	}
 }
 
+func updateRemoteCommand(check, force, plain bool) string {
+	flags := ""
+	if check {
+		flags += " --check"
+	}
+	if force {
+		flags += " --force"
+	}
+	if plain {
+		flags += " --plain"
+	}
+	return `PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; command -v fleet >/dev/null || { echo "no fleet installed (install.sh)"; exit 3; }; fleet update` + flags
+}
+
 // updateRemotes runs `fleet update` on every SSH host of the configuration (each machine's fleet updates
 // itself; this only asks it to do so now) and prints what each said.
-func updateRemotes(check, force bool) {
+func updateRemotes(check, force, plain bool) {
 	cfg, err := config.Load(config.Path())
 	if err != nil {
 		fmt.Println("  could not read the configuration:", err)
@@ -292,14 +353,7 @@ func updateRemotes(check, force bool) {
 		fmt.Println("\nno machines reached over SSH")
 		return
 	}
-	flags := ""
-	if check {
-		flags += " --check"
-	}
-	if force {
-		flags += " --force"
-	}
-	remote := `PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; command -v fleet >/dev/null || { echo "no fleet installed (install.sh)"; exit 3; }; fleet update` + flags
+	remote := updateRemoteCommand(check, force, plain)
 	outs := make([]string, len(hosts))
 	errs := make([]error, len(hosts))
 	var wg sync.WaitGroup

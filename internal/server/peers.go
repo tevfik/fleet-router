@@ -333,6 +333,14 @@ func peerEligible(p config.Peer, m ExportModel, ownID string) bool {
 func (s *Server) reconcilePeer(p config.Peer, peerID string, models []ExportModel, rtt time.Duration) {
 	cfg := s.Config()
 	tr := p.Transport()
+	// The user's removal memory for this peer: references (node/model) deleted from its imports that must
+	// not be re-added when the peer still offers them on this refresh.
+	dismissed := map[string]bool{}
+	for _, d := range cfg.DismissedPeers {
+		if d.Peer == p.Name {
+			dismissed[d.Ref] = true
+		}
+	}
 	existing := map[string]config.Endpoint{} // ref → current imported endpoint
 	taken := map[string]bool{}
 	var rest []config.Endpoint
@@ -350,6 +358,13 @@ func (s *Server) reconcilePeer(p config.Peer, peerID string, models []ExportMode
 	seen := map[string]bool{}
 	for _, m := range models {
 		if !peerEligible(p, m, cfg.ID) {
+			continue
+		}
+		ref := m.Ref
+		if ref == "" { // a peer too old to name the reference: the same address the import would build
+			ref = m.Node + "/" + m.Model
+		}
+		if dismissed[ref] { // the user deleted it: do not bring it back on a refresh
 			continue
 		}
 		ep := config.Endpoint{Node: m.Node, Model: m.Model, Peer: p.Name, Path: m.Path,
@@ -469,6 +484,7 @@ func (s *Server) RemovePeer(name string) error {
 		}
 	}
 	cfg.Peers, cfg.Endpoints = ps, eps
+	cfg.DropDismissedPeer(name)
 	return s.SetConfig(cfg)
 }
 

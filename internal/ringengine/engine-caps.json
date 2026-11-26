@@ -3,7 +3,7 @@
   "ring_protocol": {
     "major": 101,
     "minor": 0,
-    "patch": 6
+    "patch": 7
   },
   "stage_protocol": {
     "magic": "FSP1",

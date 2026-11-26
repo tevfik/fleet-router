@@ -257,3 +257,111 @@ func TestPeerSameModelTwiceImportsOnce(t *testing.T) {
 		t.Fatalf("want one imported endpoint, got %v", names)
 	}
 }
+
+// A peer model the user deletes must not come back: the removal is recorded in dismissed_peers (config
+// file, survives restarts), SyncPeers skips that model of that peer, and the health and warm info of the
+// removed names are forgotten. Removing a local (non-peer) endpoint clears its state too but records no
+// dismissal. Dropping the dismissal entry lets the model be imported again.
+func TestDeletedPeerModelStaysDeleted(t *testing.T) {
+	be := fakeBackend()
+	defer be.Close()
+	_, bFront := startFleet(t, &config.Config{Name: "bravo", Roles: map[string]config.Role{}, Endpoints: []config.Endpoint{
+		{Name: "g", Node: "dino", URL: be.URL, Model: "gemma"},
+		{Name: "q", Node: "dino", URL: be.URL, Model: "qwen"},
+	}})
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := (&config.Config{Name: "laptop", Roles: map[string]config.Role{},
+		Endpoints: []config.Endpoint{{Name: "own", Node: "laptop", URL: be.URL, Model: "tiny"}}}).Save(path); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.ctx = context.Background()
+	a.ensureID()
+	if err := a.AddPeer(config.Peer{Name: "bravo", URL: bFront.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	a.SyncPeers(ctx)
+	gname, qname := "", ""
+	for _, e := range a.Config().Endpoints {
+		switch e.Ref() {
+		case "dino/gemma":
+			gname = e.Name
+		case "dino/qwen":
+			qname = e.Name
+		}
+	}
+	if gname == "" || qname == "" {
+		t.Fatalf("both peer models should be imported: %+v", a.Config().Endpoints)
+	}
+	// give the doomed names state and warm info to check they are forgotten (own never gets either by itself)
+	a.mu.Lock()
+	a.state["own"] = &EpState{OK: true}
+	a.mu.Unlock()
+	a.warm.set(gname, ModelInfo{Size: 42})
+	a.warm.set("own", ModelInfo{Size: 7})
+
+	rec := rtDo(t, a, "POST", "/fleet/endpoints", map[string]any{"remove": []string{gname, "own"}})
+	if rec.Code != 200 {
+		t.Fatalf("remove: %d %s", rec.Code, rec.Body.String())
+	}
+	if a.Config().Endpoint(gname) != nil || a.Config().Endpoint("own") != nil {
+		t.Fatalf("still configured: %+v", a.Config().Endpoints)
+	}
+	a.mu.RLock()
+	_, gState := a.state[gname]
+	_, ownState := a.state["own"]
+	_, qState := a.state[qname]
+	a.mu.RUnlock()
+	if gState || ownState {
+		t.Fatal("removed endpoints kept their health state")
+	}
+	if !qState {
+		t.Fatal("the kept peer model lost its health state")
+	}
+	if _, ok := a.warm.get(gname); ok {
+		t.Fatal("removed endpoint kept its warm info")
+	}
+	if _, ok := a.warm.get("own"); ok {
+		t.Fatal("removed local endpoint kept its warm info")
+	}
+	// only the peer model is on the dismissal list, in the file as well as in memory
+	saved, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.DismissedPeers) != 1 || saved.DismissedPeers[0].Peer != "bravo" || saved.DismissedPeers[0].Ref != "dino/gemma" {
+		t.Fatalf("dismissed_peers on disk: %+v", saved.DismissedPeers)
+	}
+	// and no refresh, this daemon's or a fresh one over the same file, re-imports it
+	for i := 0; i < 3; i++ {
+		a.SyncPeers(ctx)
+	}
+	a2, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2.ctx = ctx
+	a2.SyncPeers(ctx)
+	a2.SyncPeers(ctx)
+	if a2.Config().Endpoint(gname) != nil {
+		t.Fatal("a refresh re-imported the deleted peer model")
+	}
+	for _, e := range a2.Config().Endpoints {
+		if e.Ref() != "dino/qwen" {
+			t.Fatalf("only the kept model may remain: %+v", e)
+		}
+	}
+	// drop the entry and the model is importable again (config undo, or a hand edit)
+	if err := a2.UpdateConfig(func(c *config.Config) bool { c.DismissedPeers = nil; return true }); err != nil {
+		t.Fatal(err)
+	}
+	a2.SyncPeers(ctx)
+	if a2.Config().Endpoint(gname) == nil {
+		t.Fatal("without the dismissal the deleted model must come back on the next sync")
+	}
+}

@@ -414,6 +414,20 @@ func (s *Server) Handler() http.Handler {
 			httpErr(w, 400, fmt.Sprintf("%s is named by role(s) %s: remove it from them first (fleet role set / rm), or have the roles mended with --mend-roles (the preferred endpoint becomes the first fallback; a role left with nothing is deleted; fleet config undo restores)", strings.Join(drop, ", "), strings.Join(used, ", ")))
 			return
 		}
+		// A peer model the user deletes is recorded on the dismissed list: the next SyncPeers must not
+		// import it back (drop the entry, or config undo this change, to let it come back). Its health
+		// and warm info are forgotten too, so the name starts clean if it ever returns.
+		var gone []string
+		for _, n := range drop {
+			e := cfg.Endpoint(n)
+			if e == nil {
+				continue
+			}
+			gone = append(gone, n)
+			if e.Peer != "" {
+				cfg.DismissPeerModel(e.Peer, e.Ref())
+			}
+		}
 		// roles that named a removed endpoint are mended (a replacement keeps them as they are)
 		notes := cfg.DropEndpoints(drop...)
 		eps := cfg.Endpoints
@@ -439,6 +453,7 @@ func (s *Server) Handler() http.Handler {
 			httpErr(w, 400, err.Error())
 			return
 		}
+		s.forgetEndpoints(gone...)
 		writeJSON(w, map[string]any{"endpoints": len(cfg.Endpoints), "roles": notes})
 	}))
 	// discovery runs in the daemon (it knows its own tunnels and its own machine name)

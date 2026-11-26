@@ -195,6 +195,46 @@ func (p Peer) Transport() Endpoint {
 	return e
 }
 
+// DismissedPeer is one peer model the user deleted: the name of the peer that offered it and the model
+// address it was imported under (node/model, see Endpoint.Ref). As long as the entry stands, refreshing
+// that peer never imports the model again.
+type DismissedPeer struct {
+	Peer string `yaml:"peer" json:"peer"`
+	Ref  string `yaml:"ref" json:"ref"`
+}
+
+// DismissPeerModel records that the user deleted a model imported from a peer (no-op when it is already listed).
+func (c *Config) DismissPeerModel(peer, ref string) {
+	for _, d := range c.DismissedPeers {
+		if d.Peer == peer && d.Ref == ref {
+			return
+		}
+	}
+	c.DismissedPeers = append(c.DismissedPeers, DismissedPeer{Peer: peer, Ref: ref})
+}
+
+// DropDismissedPeer forgets every dismissal recorded for a peer: its models are gone with the peer,
+// the entries would only accumulate.
+func (c *Config) DropDismissedPeer(peer string) {
+	var keep []DismissedPeer
+	for _, d := range c.DismissedPeers {
+		if d.Peer != peer {
+			keep = append(keep, d)
+		}
+	}
+	c.DismissedPeers = keep
+}
+
+// PeerModelDismissed reports whether the user deleted this model of this peer.
+func (c *Config) PeerModelDismissed(peer, ref string) bool {
+	for _, d := range c.DismissedPeers {
+		if d.Peer == peer && d.Ref == ref {
+			return true
+		}
+	}
+	return false
+}
+
 type Role struct {
 	Preferred string   `yaml:"preferred" json:"preferred"`
 	Fallback  []string `yaml:"fallback,omitempty" json:"fallback,omitempty"`
@@ -267,12 +307,17 @@ type Config struct {
 	// accepted wherever the API key is.
 	Paired []Paired `yaml:"paired,omitempty" json:"paired,omitempty"`
 	// ID identifies this fleet to its peers (generated on first start). Name is how it is shown (default: hostname).
-	ID        string          `yaml:"id,omitempty" json:"id,omitempty"`
-	Name      string          `yaml:"name,omitempty" json:"name,omitempty"`
-	Peers     []Peer          `yaml:"peers,omitempty" json:"peers,omitempty"`
-	Roles     map[string]Role `yaml:"roles,omitempty" json:"roles"`
-	Endpoints []Endpoint      `yaml:"endpoints" json:"endpoints"`
-	Discover  Discover        `yaml:"discover,omitempty" json:"discover"`
+	ID    string `yaml:"id,omitempty" json:"id,omitempty"`
+	Name  string `yaml:"name,omitempty" json:"name,omitempty"`
+	Peers []Peer `yaml:"peers,omitempty" json:"peers,omitempty"`
+	// DismissedPeers records the peer models the user deleted (fleet endpoint rm, the menu, POST
+	// /fleet/endpoints): as long as the entry is there, refreshing that peer never imports that model again.
+	// This is the daemon's own removal memory (the per-peer skip: filter is the user's, set when adding the
+	// peer); drop an entry (fleet config edit, or config undo the removal) to let the model come back.
+	DismissedPeers []DismissedPeer `yaml:"dismissed_peers,omitempty" json:"dismissed_peers,omitempty"`
+	Roles          map[string]Role `yaml:"roles,omitempty" json:"roles"`
+	Endpoints      []Endpoint      `yaml:"endpoints" json:"endpoints"`
+	Discover       Discover        `yaml:"discover,omitempty" json:"discover"`
 	// Economy settings: peer-to-peer compute token accounting, fair queuing, and compute leasing.
 	Economy *EconomyConfig `yaml:"economy,omitempty" json:"economy,omitempty"`
 	// Hub configuration: custom cloud peering hub target and optional bearer token

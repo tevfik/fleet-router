@@ -349,10 +349,14 @@ func (s *Server) stopAndBook(ctx context.Context, runID string, ep config.Endpoi
 			return rep
 		}
 		rep.Roles = cfg.DropEndpoints(ep.Name)
+		if ep.Peer != "" { // like the endpoints handler: a deleted peer model is never imported again
+			cfg.DismissPeerModel(ep.Peer, ep.Ref())
+		}
 		if err := s.SetConfig(cfg); err != nil {
 			rep.Warnings = append(rep.Warnings, "the endpoint could not be removed: "+err.Error())
 		} else {
 			rep.Removed = true
+			s.forgetEndpoints(ep.Name)
 		}
 	}
 	return rep

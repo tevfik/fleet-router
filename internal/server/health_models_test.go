@@ -64,3 +64,34 @@ func TestHealth_UnreachableGroupSkipsEngineCalls(t *testing.T) {
 		t.Fatalf("no engine calls after a failed dial: %+v", st.Group)
 	}
 }
+
+func TestHealth_ProbeChatIgnoresModels404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			http.NotFound(w, r)
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	epChat := rtEp("chat-ep", "n1", srv.URL+"/v1", "m")
+	epChat.Probe = "chat"
+	epModels := rtEp("models-ep", "n1", srv.URL+"/v1", "m")
+
+	s := rtServer(t, &config.Config{Endpoints: []config.Endpoint{epChat, epModels}})
+	for _, e := range s.Config().Endpoints {
+		s.probe(context.Background(), &e)
+	}
+
+	if st := s.getState("chat-ep"); !st.OK {
+		t.Fatalf("expected probe: chat endpoint to be up when /v1/models returns 404 and /v1/chat/completions succeeds, got %+v", st)
+	}
+	if st := s.getState("models-ep"); st.OK {
+		t.Fatalf("expected default /v1/models probe endpoint to fail on 404, got %+v", st)
+	}
+}

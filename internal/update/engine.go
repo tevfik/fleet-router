@@ -396,6 +396,30 @@ func getLong(ctx context.Context, u string) (*http.Response, error) {
 	return resp, nil
 }
 
+// EngineCheck describes whether an engine build is already installed or available to install.
+type EngineCheck struct {
+	Version   string
+	File      EngineFile
+	Why       string
+	Installed bool
+}
+
+// CheckEngine checks the package registry for the engine build that suits this machine without downloading it.
+func CheckEngine(ctx context.Context, force bool) (EngineCheck, error) {
+	files, err := EngineFiles(ctx)
+	if err != nil {
+		return EngineCheck{}, err
+	}
+	m := DetectMachine()
+	f, why, err := ChooseVariant(m, files)
+	if err != nil {
+		return EngineCheck{}, err
+	}
+	ver := engineVersion()
+	installed := !force && strings.HasPrefix(EngineInstalled(), ver+" "+f.Name)
+	return EngineCheck{Version: ver, File: f, Why: why, Installed: installed}, nil
+}
+
 // EnsureEngine puts the engine build that suits this machine in place of exe. variant ("" = chosen by the machine) is a
 // file name or any part of one; without force, a binary that already is that build is left alone.
 // It returns what happened in one line.

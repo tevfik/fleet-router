@@ -235,6 +235,18 @@ func (s *Server) Reload() error {
 	return nil
 }
 
+// forgetEndpoints throws away what the daemon remembers about removed endpoints: their health and their
+// warm model info. A name that comes back (re-added, or re-imported from a peer) starts clean instead of
+// inheriting an old model's state.
+func (s *Server) forgetEndpoints(names ...string) {
+	s.mu.Lock()
+	for _, n := range names {
+		delete(s.state, n)
+	}
+	s.mu.Unlock()
+	s.warm.drop(names...)
+}
+
 // lim returns the named limiter, creating it if needed.
 func (s *Server) lim(key string) *limiter {
 	s.mu.Lock()

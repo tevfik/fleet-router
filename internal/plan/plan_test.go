@@ -784,3 +784,89 @@ func TestPlan_SingleNodeCPUMoEVRAMBudget(t *testing.T) {
 		t.Fatalf("expected candidate rejection when VRAM budget exceeds GPU memory, got %+v", r2.Candidates)
 	}
 }
+
+func TestGGMLQuantInfo_PrismML(t *testing.T) {
+	// ggml tensor ids 41/42 are Q1_0/Q2_0 - do not confuse them with llama_ftype numbers
+	// (general.file_type 40 = Q1_0, 41 = Q2_0; internal/ggufmeta owns that map).
+	q1, ok := GGMLQuantInfo(41)
+	if !ok || q1.Name != "Q1_0" || q1.BlockSize != 128 || q1.TypeSize != 18 {
+		t.Fatalf("Q1_0 = %+v, ok=%v", q1, ok)
+	}
+	if math.Abs(q1.BPW()-1.125) > 1e-9 {
+		t.Fatalf("Q1_0 BPW = %v, want 1.125", q1.BPW())
+	}
+	q2, ok := GGMLQuantInfo(42)
+	if !ok || q2.Name != "Q2_0" || q2.BlockSize != 64 || q2.TypeSize != 18 {
+		t.Fatalf("Q2_0 = %+v, ok=%v", q2, ok)
+	}
+	if math.Abs(q2.BPW()-2.25) > 1e-9 {
+		t.Fatalf("Q2_0 BPW = %v, want 2.25", q2.BPW())
+	}
+	// 4096 x 4096 matrix: Q2_0 = (4096/64)*18 * 4096 = 4,718,592 bytes
+	if got, want := TensorBytes([]uint64{4096, 4096}, 42), int64(64*18*4096); got != want {
+		t.Fatalf("TensorBytes Q2_0 = %d, want %d", got, want)
+	}
+
+	pq2, ok := GGMLQuantInfo(142)
+	if !ok || pq2.Name != "PQ2_0" || pq2.BlockSize != 128 || pq2.TypeSize != 34 {
+		t.Fatalf("PQ2_0 = %+v, ok=%v", pq2, ok)
+	}
+	if math.Abs(pq2.BPW()-2.125) > 1e-9 {
+		t.Fatalf("PQ2_0 BPW = %v, want 2.125", pq2.BPW())
+	}
+
+	ptq1, ok := GGMLQuantInfo(143)
+	if !ok || ptq1.Name != "PTQ1_0" || ptq1.BlockSize != 128 || ptq1.TypeSize != 28 {
+		t.Fatalf("PTQ1_0 = %+v, ok=%v", ptq1, ok)
+	}
+	if math.Abs(ptq1.BPW()-1.75) > 1e-9 {
+		t.Fatalf("PTQ1_0 BPW = %v, want 1.75", ptq1.BPW())
+	}
+
+	// 4096 x 4096 weight matrix: 16,777,216 weights
+	// PTQ1_0: (4096/128)*28 * 4096 = 3,670,016 bytes
+	if got, want := TensorBytes([]uint64{4096, 4096}, 143), int64(32*28*4096); got != want {
+		t.Fatalf("TensorBytes PTQ1_0 = %d, want %d", got, want)
+	}
+	// PQ2_0: (4096/128)*34 * 4096 = 4,456,448 bytes
+	if got, want := TensorBytes([]uint64{4096, 4096}, 142), int64(32*34*4096); got != want {
+		t.Fatalf("TensorBytes PQ2_0 = %d, want %d", got, want)
+	}
+
+	// ParseGGUF with size=0 falls back to TensorBytes for the last tensor using its ggml type ID.
+	var w gw
+	w.WriteString("GGUF")
+	w.u32(3)
+	w.u64(1) // 1 tensor
+	w.u64(3) // 3 kv
+	w.str("general.architecture")
+	w.u32(8)
+	w.str("qwen35")
+	w.str("qwen35.block_count")
+	w.u32(4)
+	w.u32(1)
+	w.str("qwen35.embedding_length")
+	w.u32(4)
+	w.u32(4096)
+	// tensor: blk.0.ffn_gate.weight, dims [4096, 4096], type 143 (PTQ1_0), offset 0
+	w.str("blk.0.ffn_gate.weight")
+	w.u32(2)
+	w.u64(4096)
+	w.u64(4096)
+	w.u32(143)
+	w.u64(0)
+	for w.Len()%32 != 0 {
+		w.WriteByte(0)
+	}
+	m, err := ParseGGUF(bytes.NewReader(w.Bytes()), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBytes := int64(32 * 28 * 4096)
+	if m.LayerBytes[0] != wantBytes || m.Weights() != wantBytes {
+		t.Fatalf("LayerBytes[0]=%d Weights=%d, want %d", m.LayerBytes[0], m.Weights(), wantBytes)
+	}
+	if len(m.Tensors) != 1 || m.Tensors[0].Type != 143 {
+		t.Fatalf("Tensors=%+v, want Type=143", m.Tensors)
+	}
+}

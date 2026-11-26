@@ -181,6 +181,7 @@ var (
 	readGGUF        = plan.ReadGGUF
 	readRemoteMeta  = readRemoteGGUF
 	localHostname   = defaultLocalHostname
+	localConfigName = defaultLocalConfigName
 	lanProbe        = func(rwm *RemoteWorkerManager, node string) bool {
 		_, ok := rwm.ResolveLANAddress(node, "50152")
 		return ok
@@ -226,9 +227,38 @@ func defaultLocalHostname() string {
 	return short
 }
 
-// isLocalNode says whether a master/worker name means this machine.
+// defaultLocalConfigName is this machine's own name in the configuration (name: in config.yaml): how the fleet
+// calls this machine when the OS hostname differs from the configured node name. Empty when
+// the config names nothing; the mesh plans, scans and registers by that name, so deploy must answer to it too.
+func defaultLocalConfigName() string {
+	cfg, err := config.Load(config.Path())
+	if err != nil || cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Name)
+}
+
+// isLocalNode says whether a master/worker name means this machine: an address of it, its OS hostname, or the name
+// this fleet gave itself in the configuration. The last one matters when os.Hostname differs from it: without it
+// deploy and the memory check would ssh from the machine to itself under its config name.
 func isLocalNode(n string) bool {
-	return isThisMachine(n) || strings.EqualFold(n, localHostname())
+	if isThisMachine(n) || strings.EqualFold(n, localHostname()) {
+		return true
+	}
+	cn := localConfigName()
+	return cn != "" && strings.EqualFold(n, cn)
+}
+
+// endpointPrefix picks the prefix of a derived endpoint name: a model that runs on one machine of this fleet is
+// named after that machine (<node>-…, as discovery names what runs on a node); a model spread over a ring, or
+// running whole on a machine that is not this one, keeps "distributed-".
+func endpointPrefix(node string, ringServers []string) string {
+	if len(ringServers) == 0 && isLocalNode(node) {
+		if s := config.Slug(node); s != "" {
+			return s + "-"
+		}
+	}
+	return "distributed-"
 }
 
 // proportional splits total blocks over the stages in proportion to weights (largest remainders; every stage at
@@ -740,7 +770,7 @@ func PlanDeployment(cfg *config.Config, opts DeployOptions) (*DeployResult, erro
 	if modelInfo != nil {
 		modelName = modelInfo.Name
 	}
-	endpointName := "distributed-" + endpointSlug(opts.ModelPath, modelName)
+	endpointName := endpointPrefix(masterNode, ringServers) + endpointSlug(opts.ModelPath, modelName)
 	if opts.EndpointName != "" {
 		endpointName = opts.EndpointName
 	}

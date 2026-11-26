@@ -34,7 +34,7 @@ const deployUsage = `usage: fleet deploy [<model.gguf>] [--engine ring|chain] [-
        [--via-hub | --via-hub-node N1,N2 | --no-hub] [--hub URL] [--key|--hub-key KEY] [--hub-listen-base P] [--hub-rtt-ms MS]
        [--master-env KEY=VALUE]... [--worker-env NODE:KEY=VALUE]... [--master-arg ARG]...
        [--force] [--load-timeout S] [--force-split] [--dry-run] [--json]
-       fleet deploy <model> --engine chain [--plan plan.json] [--pick N] [--model-dir D] [--proto csp1|v1|zmq]
+       fleet deploy <model> --engine chain [--plan plan.json] [--pick N] [--model-dir D] [--proto csp1|v1]
        [--timeout-s S] [--embedding-offload] [--ready-timeout D] [--cpu-moe|--n-cpu-moe N] [--moe-cache-mib N]
        [--port P] [--master M] [--workers W] [--ctx C] [--np N] [--lanes L] [--role R] [--name N]
        [--spec S] [--draft-model D] [--draft-max K] [--wire W] [--relay | --via-hub [--hub URL]]

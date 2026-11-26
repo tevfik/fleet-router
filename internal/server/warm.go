@@ -61,6 +61,16 @@ func (w *warmStore) set(name string, m ModelInfo) {
 	w.mu.Unlock()
 }
 
+// drop forgets what the runtimes said about removed endpoints (a name that comes back — re-added or
+// re-imported — must not inherit an old model's size or loaded flag).
+func (w *warmStore) drop(names ...string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, n := range names {
+		delete(w.byEp, n)
+	}
+}
+
 // cold reports whether the runtime said the endpoint's model is not loaded.
 func (s *Server) cold(name string) bool {
 	m, ok := s.warm.get(name)

@@ -50,7 +50,7 @@ const usage = `fleet — a model fleet in one binary
   fleet config history | undo   previous configurations (every change keeps the one it replaced) / go one step back
   fleet key set <key> | show | rm   manage the hub API key (~/.config/fleet/.env and config)
   fleet eval [--role R | --all | endpoint…] [--show]   quality score per model (a fixed suite checked by code, no judge model)
-  fleet update [--check] [--force] [--rollback] [--all] [--source]   install the newest release from the git repository (the daemon also does it itself); --all: also on every SSH machine; --source: where this build looks
+  fleet update [--check] [--force] [--rollback] [--all] [--source] [--plain]   install the newest release from the git repository (or engine build when the engine is linked in; the daemon also does it itself); --plain: replace with a plain release; --all: also on every SSH machine; --source: where this build looks
   fleet version
 
 Configuration: ` + "`fleet config-path`" + ` (override with FLEET_CONFIG).
