@@ -65,9 +65,7 @@ func (s *Server) RunHWBench(why string) error {
 	go func() {
 		log.Printf("benchmarking this machine (%s)", why)
 		r := hostinfo.RunBench(s.ctx, s.Config().GPUBandwidth)
-		h.mu.Lock()
-		h.res, h.running = &r, false
-		h.mu.Unlock()
+		// saved before the run counts as finished: whoever waits for it may read machine.json at once
 		if b, err := json.MarshalIndent(r, "", "  "); err == nil {
 			p := config.HWBenchPath()
 			_ = os.MkdirAll(filepath.Dir(p), 0o700)
@@ -75,6 +73,9 @@ func (s *Server) RunHWBench(why string) error {
 				log.Printf("could not save the machine benchmark: %v", err)
 			}
 		}
+		h.mu.Lock()
+		h.res, h.running = &r, false
+		h.mu.Unlock()
 		log.Printf("machine benchmark: AI score %d · %.0f tok/s on an 8B Q4 model · up to %gB in %s (%.1fs)", r.Score, r.Speed8B, r.MaxFastB, r.FastWhere, r.Took)
 	}()
 	return nil
