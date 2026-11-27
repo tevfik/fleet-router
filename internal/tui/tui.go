@@ -244,6 +244,7 @@ type model struct {
 	planDisableSpec bool               // false: speculative ring hopping enabled (default), true: sequential ring only
 	planMoECache    int                // 0: Auto (Max VRAM), 1: 3300 MiB, 2: 2048 MiB, 3: 1024 MiB, 4: Disabled
 	planKV          int                // KV cache type: 0: q8_0 (default), 1: q4_0, 2: f16
+	planKVUnified   bool               // one KV cache the slots share (-kvu): each request can use the whole context
 	planSpecMode    int                // 0: Auto (Smart Topology), 1: DFlash Diffusion, 2: MTP Native, 3: N-gram Lookahead, 4: Disabled
 	planEngineMode  int                // 0: Auto (RTT Smart), 1: ring (Protocol 1), 2: chain (Protocol 2 / FSP1)
 	planViaHub      bool               // reach the workers through the hub's raw TCP streams (fleet deploy --via-hub)

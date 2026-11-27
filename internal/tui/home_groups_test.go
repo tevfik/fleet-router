@@ -2,6 +2,7 @@ package tui
 
 import (
 	tea "charm.land/bubbletea/v2"
+	"slices"
 	"strings"
 	"testing"
 
@@ -146,22 +147,22 @@ func TestPlanAdvanced_OpenAndFold(t *testing.T) {
 		t.Fatal("enter on the advanced line opens it")
 	}
 	v := plain(m.viewPlan())
-	for _, shown := range []string{"target ", "moe cache ", "kv cache ", "spec engine ", "vision ", "paging ", "engine "} {
+	for _, shown := range []string{"target ", "moe cache ", "kv cache ", "kv share ", "spec engine ", "vision ", "paging ", "engine "} {
 		if !strings.Contains(v, shown) {
 			t.Errorf("%q missing from the open view", shown)
 		}
 	}
-	// open: ↓ goes through all seven, then to the candidates
+	// open: ↓ goes through all eight, then to the candidates
 	var walk []int
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 9; i++ {
 		nm, _ := m.keyStr("down", "")
 		m = nm.(model)
 		walk = append(walk, m.planParamCur)
 	}
-	if m.planSection != 2 || len(walk) != 8 {
+	if m.planSection != 2 || len(walk) != 9 {
 		t.Fatalf("open walk %v ended in section %d", walk, m.planSection)
 	}
-	if walk[0] != 4 || walk[6] != 9 {
+	if walk[0] != 4 || walk[7] != 9 {
 		t.Fatalf("open walk %v: target first, engine last", walk)
 	}
 	// ←/→ on the line folds it again
@@ -302,5 +303,26 @@ func TestNote_LongErrorWrapsAndKeepsItsEnd(t *testing.T) {
 				t.Errorf("w=%d: a line is %d wide: %q", w, ansi.StringWidth(l), l)
 			}
 		}
+	}
+}
+
+// kv share toggles the unified KV cache, goes into the deploy options and the saved profile, and shows as changed.
+func TestPlanKVShare_Toggle(t *testing.T) {
+	m := planWithCandidates(t)
+	m.planSection, m.planAdv, m.planParamCur = 1, true, 12
+	nm, _ := m.keyStr("right", "")
+	m = nm.(model)
+	if !m.planKVUnified {
+		t.Fatal("→ on kv share turns the unified cache on")
+	}
+	if v := plain(m.viewPlan()); !strings.Contains(v, "unified (shared") {
+		t.Fatalf("the view shows the unified choice:\n%s", v)
+	}
+	if got := m.advancedChanged(); !slices.Contains(got, "kv unified") {
+		t.Fatalf("advancedChanged lists kv unified: %v", got)
+	}
+	p, err := m.candidateProfile("x")
+	if err != nil || !p.Cache.Unified || p.Cache.K != "q8_0" {
+		t.Fatalf("the saved profile keeps the kv cache settings: %+v %v", p.Cache, err)
 	}
 }

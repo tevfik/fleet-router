@@ -605,7 +605,7 @@ func PlanHead(r plan.Result) (title, verdict string) {
 	if r.SpecDesc != "" {
 		spec = " · speculation: " + r.SpecDesc
 	}
-	return fmt.Sprintf("%s — weights %.1f GB + KV cache %.1f GB (%d slot(s) × %d tokens)%s", r.Model, r.WeightsGB, r.KVGB, r.Np, r.Ctx, spec), "  " + r.Verdict
+	return fmt.Sprintf("%s — weights %.1f GB + %s%s", r.Model, r.WeightsGB, r.ContextText(), spec), "  " + r.Verdict
 }
 
 // PlanNotes are the machines left out and the caveat about the estimates.

@@ -53,6 +53,7 @@ type DeployOptions struct {
 	EndpointName   string            // --name: endpoint name to register (empty: "distributed-" + a slug of the model)
 	ExitOnFail     bool              // GGML_RING_EXIT_ON_FAIL=1 on the master: a failed ring exits with code 75 so a supervisor (fleet watchdog) redeploys it
 	CacheTypeK     string            // KV cache data type for K (f16, q8_0, q4_0)
+	KVUnified      bool              // -kvu: the slots share one KV cache of -c tokens, each can use up to all of it (default: each slot gets -c/np)
 	CacheTypeV     string            // KV cache data type for V (f16, q8_0, q4_0)
 	MoECacheMiB    int               // GPU cache size in MiB for host-resident MoE experts (e.g. 3072)
 	CPUMoE         bool              // Keep all MoE expert weights in host CPU RAM (with hot expert cache on GPU)
@@ -131,6 +132,8 @@ type DeployResult struct {
 	// Ctx / Np: the context and slots the master really runs with (-c / -np), after the defaults and the strategy.
 	Ctx int `json:"ctx,omitempty"`
 	Np  int `json:"np,omitempty"`
+	// KVUnified: the master runs with -kvu (one KV cache the slots share; each request can use up to Ctx).
+	KVUnified bool `json:"kv_unified,omitempty"`
 	// Hub path: HubWorkers maps each worker reached through the hub to its listen port on the master (its
 	// RING_SERVERS entry is 127.0.0.1:<port>), StreamCmds is the `fleet stream connect` run there for it, StreamPIDs
 	// the started processes. The API key is never in any of them.
@@ -739,6 +742,10 @@ func PlanDeployment(cfg *config.Config, opts DeployOptions) (*DeployResult, erro
 	}
 
 	kvCacheFlag := ""
+	kvUnified := opts.KVUnified || hasArg(opts.MasterArgs, "-kvu", "--kv-unified")
+	if opts.KVUnified && !hasArg(opts.MasterArgs, "-kvu", "--kv-unified") {
+		kvCacheFlag += " -kvu"
+	}
 	if opts.CacheTypeK != "" {
 		kvCacheFlag += fmt.Sprintf(" --cache-type-k %s", opts.CacheTypeK)
 	}
@@ -876,7 +883,11 @@ func PlanDeployment(cfg *config.Config, opts DeployOptions) (*DeployResult, erro
 		}
 	}
 
-	memory := memNeeds(modelInfo, devList, tsStr, masterNode, cpx.devNode, ctxLen, np, opts.CacheTypeK, opts.CacheTypeV)
+	rsPlanes := 1
+	if specFlag != "" {
+		rsPlanes = plan.RSPlanes(specType, draftMax)
+	}
+	memory := memNeeds(modelInfo, devList, tsStr, masterNode, cpx.devNode, ctxLen, np, rsPlanes, opts.CacheTypeK, opts.CacheTypeV)
 	if !opts.CPUOnly {
 		memory = applyMoECacheBudget(memory, modelInfo, masterNode, opts.CPUMoE, opts.NCPUMoE, moeCacheMiB)
 	}
@@ -888,6 +899,7 @@ func PlanDeployment(cfg *config.Config, opts DeployOptions) (*DeployResult, erro
 	return &DeployResult{
 		Ctx:          ctxLen,
 		Np:           np,
+		KVUnified:    kvUnified,
 		RingServers:  ringServers,
 		MasterEngine: masterEngine,
 		Memory:       memory,
@@ -1285,4 +1297,29 @@ func newRunID() string {
 			return fmt.Sprintf("run-%d", ms)
 		}
 	}
+}
+
+// SlotCtx is the longest context one request gets: -c split over the slots, unless the KV cache is unified (-kvu),
+// where every slot can grow to the whole -c (as long as the others leave room). The endpoint is registered with it so
+// that the router never sends a slot more than it holds.
+func (r *DeployResult) SlotCtx() int {
+	if r == nil {
+		return 0
+	}
+	if r.Np > 1 && !r.KVUnified {
+		return r.Ctx / r.Np
+	}
+	return r.Ctx
+}
+
+// hasArg says whether args has one of names (as a flag of its own).
+func hasArg(args []string, names ...string) bool {
+	for _, a := range args {
+		for _, n := range names {
+			if a == n {
+				return true
+			}
+		}
+	}
+	return false
 }

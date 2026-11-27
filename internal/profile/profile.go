@@ -95,6 +95,8 @@ type Spec struct {
 type Cache struct {
 	K string `yaml:"k,omitempty" json:"k,omitempty"`
 	V string `yaml:"v,omitempty" json:"v,omitempty"`
+	// Unified: one KV cache the slots share (-kvu), each request can use up to the whole context.
+	Unified bool `yaml:"unified,omitempty" json:"unified,omitempty"`
 }
 
 // MoE is the master's host-RAM expert options.

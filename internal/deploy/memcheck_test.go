@@ -26,7 +26,7 @@ func bigModel() *plan.Model {
 
 func TestMemNeedsSplitsBlocksAndKV(t *testing.T) {
 	m := bigModel()
-	needs := memNeeds(m, []string{"CUDA0", "RING0"}, "10,30", "dino", []string{"victor"}, 4096, 1, "", "")
+	needs := memNeeds(m, []string{"CUDA0", "RING0"}, "10,30", "dino", []string{"victor"}, 4096, 1, 1, "", "")
 	if len(needs) != 2 || needs[0].Node != "dino" || needs[1].Node != "victor" {
 		t.Fatalf("%+v", needs)
 	}
@@ -46,26 +46,26 @@ func TestMemNeedsSplitsBlocksAndKV(t *testing.T) {
 		t.Fatalf("kv %.4f want %.4f", needs[1].KVGiB, wantKV)
 	}
 	// -c is the total context shared by the slots: more slots do not mean more cache
-	if n8 := memNeeds(m, []string{"CUDA0", "RING0"}, "10,30", "dino", []string{"victor"}, 4096, 8, "", ""); n8[1].KVGiB != needs[1].KVGiB {
+	if n8 := memNeeds(m, []string{"CUDA0", "RING0"}, "10,30", "dino", []string{"victor"}, 4096, 8, 1, "", ""); n8[1].KVGiB != needs[1].KVGiB {
 		t.Fatalf("np must not multiply the cache: %.3f vs %.3f", n8[1].KVGiB, needs[1].KVGiB)
 	}
 	// a quantized cache is smaller, q8_0 about half
-	q := memNeeds(m, []string{"CUDA0", "RING0"}, "10,30", "dino", []string{"victor"}, 4096, 1, "q8_0", "q8_0")
+	q := memNeeds(m, []string{"CUDA0", "RING0"}, "10,30", "dino", []string{"victor"}, 4096, 1, 1, "q8_0", "q8_0")
 	if r := q[1].KVGiB / needs[1].KVGiB; r < 0.5 || r > 0.56 {
 		t.Fatalf("q8_0 ratio %.3f", r)
 	}
 	// a CPU device with ts 0 (--worker-cpu-experts) holds nothing of its own; the NextN order has the worker first
-	n3 := memNeeds(m, []string{"RING0", "CUDA0"}, "20,20", "dino", []string{"victor"}, 4096, 1, "", "")
+	n3 := memNeeds(m, []string{"RING0", "CUDA0"}, "20,20", "dino", []string{"victor"}, 4096, 1, 1, "", "")
 	if n3[0].Node != "victor" || n3[0].Blocks != 20 {
 		t.Fatalf("%+v", n3)
 	}
-	if memNeeds(&plan.Model{Layers: 4}, []string{"CUDA0"}, "4", "dino", nil, 1, 1, "", "") != nil {
+	if memNeeds(&plan.Model{Layers: 4}, []string{"CUDA0"}, "4", "dino", nil, 1, 1, 1, "", "") != nil {
 		t.Fatal("unknown weights: no verdict")
 	}
 }
 
 func TestEvaluateMemory(t *testing.T) {
-	needs := memNeeds(bigModel(), []string{"CUDA0"}, "40", "dino", nil, 4096, 1, "", "")
+	needs := memNeeds(bigModel(), []string{"CUDA0"}, "40", "dino", nil, 4096, 1, 1, "", "")
 	cfg := config.Default()
 	// the incident: 122+ GiB of model on a machine with 121 GiB of RAM
 	rep := evaluateMemory(needs, map[string]MemFree{"dino": {RAMGiB: 110}}, nil, cfg, false)
@@ -104,7 +104,7 @@ func TestEvaluateMemory(t *testing.T) {
 	rm := bigModel()
 	rm.Recurrent = true
 	rm.KVPerTokenLayer = 1 << 20
-	rn := memNeeds(rm, []string{"CUDA0"}, "40", "dino", nil, 8192, 1, "", "")
+	rn := memNeeds(rm, []string{"CUDA0"}, "40", "dino", nil, 8192, 1, 1, "", "")
 	rep = evaluateMemory(rn, map[string]MemFree{"dino": {RAMGiB: 200}}, nil, config.Default(), false)
 	if len(rep.Blockers) != 0 || len(rep.Warnings) == 0 {
 		t.Fatalf("%v", rep)
@@ -266,7 +266,7 @@ func TestMemNeedsFollowsCPUExpertsRenumbering(t *testing.T) {
 	devs, ts := []string{"CUDA0", "RING0", "RING2", "RING1"}, "10,10,10,0"
 	devNode := []string{"A", "A", "B"}
 	got := map[string]int{}
-	for _, n := range memNeeds(m, devs, ts, "m", devNode, 4096, 1, "", "") {
+	for _, n := range memNeeds(m, devs, ts, "m", devNode, 4096, 1, 1, "", "") {
 		got[n.Node] = n.Blocks
 	}
 	if got["B"] == 0 || got["A"] == 0 || got["m"] == 0 || got["m"]+got["A"]+got["B"] != 40 {
@@ -274,7 +274,7 @@ func TestMemNeedsFollowsCPUExpertsRenumbering(t *testing.T) {
 	}
 	// the old input (workers in RING_SERVERS order) loses B
 	lost := map[string]int{}
-	for _, n := range memNeeds(m, devs, ts, "m", []string{"A", "B"}, 4096, 1, "", "") {
+	for _, n := range memNeeds(m, devs, ts, "m", []string{"A", "B"}, 4096, 1, 1, "", "") {
 		lost[n.Node] = n.Blocks
 	}
 	if lost["m"]+lost["A"]+lost["B"] == 40 && lost["B"] > 0 {
@@ -291,7 +291,7 @@ func TestMemNeedsHybridKVBlocksAndMoEVRAMBudget(t *testing.T) {
 	for i := range m.ExpertBytes {
 		m.ExpertBytes[i] = 2800 << 20 // ~2.73 GiB of 3 GiB per block is experts
 	}
-	needs := memNeeds(m, []string{"CUDA0"}, "40", "victor", nil, 4096, 1, "q8_0", "q8_0")
+	needs := memNeeds(m, []string{"CUDA0"}, "40", "victor", nil, 4096, 1, 1, "q8_0", "q8_0")
 	needs = applyMoECacheBudget(needs, m, "victor", true, 0, 3072)
 	if len(needs) != 1 {
 		t.Fatalf("%+v", needs)
@@ -338,5 +338,17 @@ func TestKVCacheFactor(t *testing.T) {
 	// the exported wrapper is the same figure
 	if d := KVCacheFactor("q8_0", "q4_0") - kvFactor("q8_0", "q4_0"); d > 1e-9 || d < -1e-9 {
 		t.Errorf("KVCacheFactor wrapper: %v", d)
+	}
+}
+
+// The recurrent state of a hybrid model is per slot (and per draft plane), unlike the KV cache the slots share.
+func TestMemNeeds_RecurrentStatePerSlot(t *testing.T) {
+	m := &plan.Model{Layers: 4, KVBlocks: 1, Recurrent: true, SSMConv: 4, SSMState: 128, SSMInner: 6144, SSMGroups: 16,
+		KVPerTokenLayer: 1024, LayerBytes: []int64{1 << 30, 1 << 30, 1 << 30, 1 << 30}}
+	one := memNeeds(m, []string{"CUDA0"}, "4", "dino", nil, 4096, 1, 1, "", "")
+	two := memNeeds(m, []string{"CUDA0"}, "4", "dino", nil, 4096, 2, 5, "", "")
+	want := m.RSGB(2, 5) - m.RSGB(1, 1)
+	if got := two[0].KVGiB - one[0].KVGiB; got < want*0.999 || got > want*1.001 {
+		t.Fatalf("two slots with MTP planes add %.3f GiB of state, want %.3f", got, want)
 	}
 }

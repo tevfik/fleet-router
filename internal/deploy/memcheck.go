@@ -72,7 +72,7 @@ func kvFactor(k, v string) float64 { return plan.KVCacheFactor(k, v) }
 // blocks in device order, in proportion to ts, the embedding and output tensors on the master. devs and ts are the
 // -dev and -ts lists; ringNodes[i] is the machine behind RINGi. A device with ts 0 (the CPU of a --worker-cpu-experts
 // worker) holds nothing of its own.
-func memNeeds(m *plan.Model, devs []string, ts string, master string, ringNodes []string, ctx, np int, cacheK, cacheV string) []NodeMem {
+func memNeeds(m *plan.Model, devs []string, ts string, master string, ringNodes []string, ctx, np, rsPlanes int, cacheK, cacheV string) []NodeMem {
 	if m == nil || m.Layers <= 0 || m.Weights() <= 0 {
 		return nil
 	}
@@ -115,9 +115,10 @@ func memNeeds(m *plan.Model, devs []string, ts string, master string, ringNodes 
 		order = append(order, n)
 		return x
 	}
-	// llama-server's -c is the TOTAL context, shared by the -np slots (each slot gets c/np): the cache is c tokens, not
-	// c x np (np stays in the signature for the callers' sake and because a unified cache is the same size).
-	_ = np
+	// llama-server's -c is the TOTAL context, shared by the -np slots (each slot gets c/np, or up to c with a unified
+	// cache): the KV cache is c tokens, not c x np. The recurrent state of a hybrid model is per slot, though (rsPlanes
+	// copies each: plan.RSPlanes), and it goes with the blocks.
+	rsBlock := m.RSGB(np, rsPlanes) * gib / float64(m.Layers)
 	kvScale := kvFactor(cacheK, cacheV)
 	if m.KVBlocks > 0 && m.KVBlocks < m.Layers {
 		kvScale *= float64(m.KVBlocks) / float64(m.Layers)
@@ -130,7 +131,7 @@ func memNeeds(m *plan.Model, devs []string, ts string, master string, ringNodes 
 			x.WeightsGiB += float64(m.LayerBytes[l]) / gib
 		}
 		x.Blocks += counts[i]
-		x.KVGiB += kvLayer * float64(counts[i]) / gib
+		x.KVGiB += (kvLayer + rsBlock) * float64(counts[i]) / gib
 		first += counts[i]
 	}
 	get(master).WeightsGiB += float64(m.OtherBytes) / gib

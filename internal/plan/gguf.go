@@ -57,6 +57,12 @@ type Model struct {
 	// KVBlocks: how many blocks keep a per-token KV cache (0: all of them; a hybrid model has recurrent blocks
 	// that keep a fixed-size state instead). Derived from the GGUF header and tensor table.
 	KVBlocks int `json:"kv_blocks,omitempty"`
+	// SSMConv / SSMState / SSMInner / SSMGroups: the state-space (Mamba, gated delta net) sizes of the recurrent
+	// blocks (<arch>.ssm.conv_kernel, .state_size, .inner_size, .group_count): what RSGB prices.
+	SSMConv   int `json:"ssm_conv,omitempty"`
+	SSMState  int `json:"ssm_state,omitempty"`
+	SSMInner  int `json:"ssm_inner,omitempty"`
+	SSMGroups int `json:"ssm_groups,omitempty"`
 
 	Shards *ShardInfo `json:"shards,omitempty"` // multi-file shard details if sharded
 
@@ -196,6 +202,41 @@ func (m *Model) Speculation() (specType string, draftTokens int, desc string) {
 		return "draft-mtp", n, fmt.Sprintf("MTP native (%d draft head(s))", n)
 	}
 	return "ngram-mod", 3, "n-gram prompt lookahead"
+}
+
+// RSPlanes is how many copies of a sequence's recurrent state llama.cpp keeps: one, plus one per draft token when a
+// draft speculation (draft-mtp, draft-dflash, ...) has to roll a partly accepted draft back (common_params
+// need_n_rs_seq: the draft's n_max). draftMax 0 is deploy's automatic choice (draft-dflash 2, otherwise 4).
+func RSPlanes(specType string, draftMax int) int {
+	if !strings.HasPrefix(specType, "draft-") {
+		return 1
+	}
+	if draftMax <= 0 {
+		draftMax = 4
+		if specType == "draft-dflash" {
+			draftMax = 2
+		}
+	}
+	return 1 + draftMax
+}
+
+// RSGB is the recurrent state (f32) of np sequences with planes copies of the state matrix each, in GiB: llama.cpp
+// allocates it per slot next to the KV cache, whatever -c is (llama_hparams n_embd_r / n_embd_s of a Mamba or gated
+// delta net block). 0 when the model has no state-space blocks or the GGUF does not say how large they are.
+func (m *Model) RSGB(np, planes int) float64 {
+	if m == nil || !m.Recurrent || m.SSMState <= 0 || m.SSMInner <= 0 {
+		return 0
+	}
+	blocks := m.Layers
+	if m.KVBlocks > 0 && m.KVBlocks < m.Layers {
+		blocks = m.Layers - m.KVBlocks
+	}
+	conv := 0
+	if m.SSMConv > 1 {
+		conv = (m.SSMConv - 1) * (m.SSMInner + 2*m.SSMGroups*m.SSMState)
+	}
+	per := float64(conv) + float64(m.SSMState)*float64(m.SSMInner)*float64(max(planes, 1))
+	return per * 4 * float64(blocks) * float64(max(np, 1)) / gib
 }
 
 // ShardInfo holds multi-file shard metadata.
@@ -660,6 +701,7 @@ func ParseGGUF(r io.Reader, size int64) (*Model, error) {
 	}
 	m.LayerBytes, m.LayerRead = make([]int64, m.Layers), make([]int64, m.Layers)
 	m.Recurrent = RecurrentKeys(arch, ints)
+	m.SSMConv, m.SSMState, m.SSMInner, m.SSMGroups = geti("ssm.conv_kernel"), geti("ssm.state_size"), geti("ssm.inner_size"), geti("ssm.group_count")
 	if iv := geti("full_attention_interval"); iv > 1 && m.Layers >= iv {
 		m.KVBlocks = m.Layers / iv
 	}

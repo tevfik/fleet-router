@@ -359,20 +359,25 @@ func TestPlan_NoBenchmarkDataYet(t *testing.T) {
 	}
 }
 
-func TestPlan_KVCacheCountsPerSlot(t *testing.T) {
+// llama-server's -c is the total context the slots share: four slots do not make the KV cache four times larger.
+func TestPlan_KVCacheSharedBySlots(t *testing.T) {
 	m := big(40, 0.5)
 	m.KVPerTokenLayer = 256 << 10 // 256 KB per token per block: 10 MB per token
 	r1 := Plan(m, nil, Options{Ctx: 1000, Np: 1})
 	r4 := Plan(m, nil, Options{Ctx: 1000, Np: 4})
-	if math.Abs(r4.KVGB/r1.KVGB-4) > 1e-9 {
-		t.Fatalf("four slots hold four caches: %.1f vs %.1f GB", r4.KVGB, r1.KVGB)
+	if math.Abs(r4.KVGB-r1.KVGB) > 1e-9 || r4.StateGB != 0 {
+		t.Fatalf("the slots share one cache of ctx tokens: %.2f vs %.2f GB (state %.2f)", r4.KVGB, r1.KVGB, r4.StateGB)
 	}
 	n := []Node{node("a", 28, 300, 0, bench(30, 300, "GPU", 16)), node("b", 28, 300, 2, bench(30, 300, "GPU", 16))}
 	if r := Plan(m, n, Options{Ctx: 100, Np: 1, Master: "a"}); len(r.Candidates) == 0 || r.Candidates[0].Kind != "single" {
 		t.Fatalf("a short context fits one machine: %s", r.Verdict)
 	}
-	if r := Plan(m, n, Options{Ctx: 2000, Np: 4, Master: "a"}); len(r.Candidates) != 0 {
-		t.Fatalf("a long context in four slots fits nowhere: %s", r.Verdict)
+	if r := Plan(m, n, Options{Ctx: 8000, Np: 4, Master: "a"}); len(r.Candidates) != 0 {
+		t.Fatalf("a long context fits nowhere: %s", r.Verdict)
+	}
+	a, b := Plan(m, n, Options{Ctx: 2000, Np: 1, Master: "a"}), Plan(m, n, Options{Ctx: 2000, Np: 4, Master: "a"})
+	if len(a.Candidates) == 0 || len(a.Candidates) != len(b.Candidates) || a.Candidates[0].Parts[0].GB != b.Candidates[0].Parts[0].GB {
+		t.Fatalf("four slots sharing the context need what one does: %s / %s", a.Verdict, b.Verdict)
 	}
 }
 
@@ -754,7 +759,7 @@ func TestParseGGUF_HybridKVBlocksAndPlannerCacheType(t *testing.T) {
 		t.Fatalf("want Recurrent=true and KVBlocks=2, got Recurrent=%v KVBlocks=%d", m.Recurrent, m.KVBlocks)
 	}
 	// Planner automatically uses m.KVBlocks (2/8 = 0.25) and CacheTypeK/V (q4_0) without manual KVBlocks/KVFactor
-	fullF16 := m.KVGB(4096, 1)
+	fullF16 := m.KVGB(4096)
 	res := Plan(m, nil, Options{Ctx: 4096, CacheTypeK: "q4_0", CacheTypeV: "q4_0"})
 	want := fullF16 * 0.25 * KVCacheFactor("q4_0", "q4_0")
 	if math.Abs(res.KVGB-want) > 1e-9 {
@@ -927,5 +932,34 @@ func TestParseGGUF_Inkling2LoopMoE(t *testing.T) {
 	r := Plan(m, []Node{n}, Options{Ctx: 8192, CPUMoE: true, MoECacheMiB: 2048})
 	if len(r.Candidates) == 0 || r.Candidates[0].Where != "GPU+RAM" {
 		t.Fatalf("expected GPU+RAM candidate under --cpu-moe, got %+v", r.Candidates)
+	}
+}
+
+// A hybrid gated-delta-net model (Bonsai 2.5 27B, qwen35) keeps its recurrent state per slot, 1 + 4 copies with MTP
+// drafting: llama.cpp allocated 1496 MiB of it for -np 2 (a 4090 ran out of memory on exactly that buffer).
+func TestPlan_RecurrentStatePerSlot(t *testing.T) {
+	m := &Model{Layers: 65, KVBlocks: 16, Recurrent: true, SSMConv: 4, SSMState: 128, SSMInner: 6144, SSMGroups: 16, HasMTP: true, MTPLayers: 1}
+	if p := RSPlanes("draft-mtp", 0); p != 5 {
+		t.Fatalf("draft-mtp keeps 1 + 4 copies, got %d", p)
+	}
+	if p := RSPlanes("ngram-mod", 0); p != 1 {
+		t.Fatalf("n-gram speculation keeps one, got %d", p)
+	}
+	got := m.RSGB(2, 5) * 1024 // MiB
+	if got < 1400 || got > 1560 {
+		t.Fatalf("two slots of Bonsai 2.5 state: %.0f MiB, llama.cpp allocated 1496", got)
+	}
+	if one := m.RSGB(1, 5); math.Abs(one*2-m.RSGB(2, 5)) > 1e-9 {
+		t.Fatal("the state grows with the slots")
+	}
+	if (&Model{Layers: 40}).RSGB(4, 5) != 0 {
+		t.Fatal("a model without recurrent blocks has no state")
+	}
+	r := Plan(m, nil, Options{Ctx: 1000, Np: 2})
+	if math.Abs(r.StateGB-m.RSGB(2, 5)) > 1e-9 {
+		t.Fatalf("the plan prices the state with the model's own speculation: %.2f", r.StateGB)
+	}
+	if !strings.Contains(r.ContextText(), "recurrent state") || !strings.Contains(r.ContextText(), "2 slots share") {
+		t.Fatalf("ContextText: %s", r.ContextText())
 	}
 }

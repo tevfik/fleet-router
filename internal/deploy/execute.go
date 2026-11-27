@@ -507,7 +507,7 @@ func ExecuteDeploymentWithProgress(ctx context.Context, cfg *config.Config, opts
 		URL:         res.URL,
 		Model:       filepath.Base(opts.ModelPath),
 		ModelSHA256: res.ModelSHA256,
-		Ctx:         res.Ctx, // what the master runs with, not what was asked for (0 = the default / the strategy's)
+		Ctx:         res.SlotCtx(), // what one request gets from the master (-c, or -c/np without -kvu), not what was asked for
 		Slots:       res.Np,
 		Group: &config.Group{
 			Engine:    "llama-ring",

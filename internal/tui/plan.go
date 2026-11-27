@@ -30,6 +30,7 @@ var (
 	planMoECaches   = []string{"Auto (Max VRAM)", "3300 MiB", "2048 MiB", "1024 MiB", "Disabled (0)"}
 	planKVCaches    = []string{"q8_0 (Half VRAM)", "q4_0 (Quarter VRAM)", "f16 (Full VRAM)"}
 	planKVTypes     = []string{"q8_0", "q4_0", "f16"}
+	planKVShares    = []string{"split (ctx/slots each)", "unified (shared, up to ctx each)"}
 	planSpecModes   = []string{"Auto (Topology)", "DFlash (Diffusion)", "MTP (Native)", "Prompt Lookahead", "Disabled"}
 	planEngineModes = []string{"Auto (RTT Smart)", "ring (Protocol 1)", "chain (Protocol 2 / FSP1)"}
 	headS           = accS
@@ -506,6 +507,7 @@ func (m model) deployCandidate(dry bool) (tea.Model, tea.Cmd) {
 		DraftMax:    0, // 0: automatic (draft-dflash 2, otherwise 4)
 		CacheTypeK:  planKVTypes[m.planKV],
 		CacheTypeV:  planKVTypes[m.planKV],
+		KVUnified:   m.planKVUnified,
 		ViaHub:      m.planViaHub, // independent of Chain (worker forwarding), as in `fleet deploy`
 		DryRun:      dry,
 	}
@@ -713,6 +715,10 @@ func (m model) keyPlan(s string) (tea.Model, tea.Cmd) {
 				m.planKV = (m.planKV + dir + len(planKVCaches)) % len(planKVCaches)
 				m.note = helpS.Render(fmt.Sprintf("KV cache type: %s", planKVCaches[m.planKV]))
 				return rerun()
+			case 12:
+				m.planKVUnified = !m.planKVUnified
+				m.note = helpS.Render(m.kvShareNote())
+				return m, nil
 			}
 		}
 		return m, nil
@@ -782,6 +788,10 @@ func (m model) keyPlan(s string) (tea.Model, tea.Cmd) {
 				m.planKV = (m.planKV + 1) % len(planKVCaches)
 				m.note = helpS.Render(fmt.Sprintf("KV cache type: %s", planKVCaches[m.planKV]))
 				return rerun()
+			case 12:
+				m.planKVUnified = !m.planKVUnified
+				m.note = helpS.Render(m.kvShareNote())
+				return m, nil
 			}
 		case 2:
 			if m.planRes == nil || len(m.planRes.Candidates) == 0 {
@@ -1042,6 +1052,7 @@ func (m model) viewPlan() string {
 
 		b.WriteString(m.selector("moe cache", planMoECaches, m.planMoECache, "", currentSec == 1 && currentParam == 5) + "\n")
 		b.WriteString(m.selector("kv cache", planKVCaches, m.planKV, "", currentSec == 1 && currentParam == 11) + "\n")
+		b.WriteString(m.selector("kv share", planKVShares, boolIdx(m.planKVUnified), "", currentSec == 1 && currentParam == 12) + "\n")
 		b.WriteString(m.selector("spec engine", planSpecModes, m.planSpecMode, "", currentSec == 1 && currentParam == 6) + "\n")
 
 		mmOpts := []string{"CPU (0 VRAM)", "GPU VRAM"}
@@ -1387,11 +1398,11 @@ func chainStageOptions(path string, ctxLen, moeSetting, moeCacheMiB int, spec, d
 const planAdvRow = 10
 
 // planParamSeq lists the settings the cursor visits, top to bottom: the four everyday ones, the advanced line, and
-// (when it is open) target, moe cache, kv cache, spec engine, vision, paging and engine.
+// (when it is open) target, moe cache, kv cache, kv share, spec engine, vision, paging and engine.
 func (m model) planParamSeq() []int {
 	seq := []int{0, 1, 2, 3, planAdvRow}
 	if m.planAdv {
-		seq = append(seq, 4, 5, 11, 6, 7, 8, 9)
+		seq = append(seq, 4, 5, 11, 12, 6, 7, 8, 9)
 	}
 	return seq
 }
@@ -1417,7 +1428,7 @@ func (m model) advancedRow(focused bool) string {
 		lead, lbl = accS.Render("▸ "), headS
 	}
 	mark := "▸"
-	hint := "target · moe cache · kv cache · spec engine · vision · paging · engine"
+	hint := "target · moe cache · kv cache · kv share · spec engine · vision · paging · engine"
 	tail := "  (enter or ←/→ opens)"
 	if m.planAdv {
 		mark, hint, tail = "▾", "enter or ←/→ folds them again", ""
@@ -1447,6 +1458,9 @@ func (m model) advancedChanged() []string {
 	}
 	if m.planKV != 0 {
 		out = append(out, "kv cache "+planKVCaches[m.planKV])
+	}
+	if m.planKVUnified {
+		out = append(out, "kv unified")
 	}
 	if m.planSpecMode != 0 {
 		out = append(out, "spec "+planSpecModes[m.planSpecMode])
@@ -1488,4 +1502,23 @@ func (m model) engineHintText() string {
 		}
 	}
 	return engineHint
+}
+
+// kvShareNote says what one request gets with the current slots, context and kv share setting.
+func (m model) kvShareNote() string {
+	ctx, np := m.currentPlanCtx(), planNps[m.planNp]
+	if m.planKVUnified {
+		return fmt.Sprintf("KV cache unified (-kvu): %d slot(s) share %d tokens, one request can use up to all of them", np, ctx)
+	}
+	if np > 1 {
+		return fmt.Sprintf("KV cache split: each of the %d slots gets %d tokens (ctx/slots)", np, ctx/np)
+	}
+	return fmt.Sprintf("KV cache split: one slot, %d tokens", ctx)
+}
+
+func boolIdx(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

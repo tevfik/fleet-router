@@ -71,7 +71,7 @@ func (n Node) eff() float64 {
 // Options of one planning run.
 type Options struct {
 	Ctx     int     // context the endpoint will serve
-	Np      int     // parallel slots (each holds its own KV cache)
+	Np      int     // parallel slots: they share the -c KV cache (each its own recurrent state, see RSGB)
 	Master  string  // the machine that has the GGUF ("" : try every machine)
 	FixedMS float64 // 0: DefaultFixedMS
 	// RingMS is a per-token cost of the ring itself, besides the workers' compute, wire and send, when a split
@@ -91,6 +91,8 @@ type Options struct {
 	KVFactor   float64
 	CacheTypeK string
 	CacheTypeV string
+	// RSPlanes: copies of a slot's recurrent state (see RSPlanes; 0: the model's own speculation with the default draft).
+	RSPlanes int
 	// CPUMoE / MoECacheMiB model --cpu-moe + --moe-cache-mib placement on a single machine (VRAM = dense + KV + expert cache + compute buffer).
 	CPUMoE        bool
 	MoECacheMiB   int
@@ -151,6 +153,22 @@ func (o Options) kvScale(m *Model) float64 {
 	return s
 }
 
+// stateGB is what the context costs besides the weights: the KV cache of the -c tokens the slots share, plus the
+// recurrent state every slot keeps on its own (hybrid / state-space models).
+func (o Options) stateGB(m *Model, ctx, np int) float64 {
+	return m.KVGB(ctx)*o.kvScale(m) + o.rsGB(m, np)
+}
+
+// rsGB is the recurrent state of np slots (see stateGB).
+func (o Options) rsGB(m *Model, np int) float64 {
+	planes := o.RSPlanes
+	if planes <= 0 {
+		spec, _, _ := m.Speculation()
+		planes = RSPlanes(spec, 0)
+	}
+	return m.RSGB(np, planes)
+}
+
 // MoEVRAMGB returns the GPU VRAM required for single-node MoE host-expert offload (--cpu-moe + --moe-cache-mib):
 // dense weights + KV cache + hot expert cache + compute buffer.
 func (o Options) MoEVRAMGB(m *Model, ctx, np int) (vramGB, denseGB, kvGB, cacheGB, computeBufGB float64) {
@@ -158,7 +176,7 @@ func (o Options) MoEVRAMGB(m *Model, ctx, np int) (vramGB, denseGB, kvGB, cacheG
 		return 0, 0, 0, 0, 0
 	}
 	denseGB = float64(m.DenseWeights()) / gib
-	kvGB = m.KVGB(ctx, np) * o.kvScale(m)
+	kvGB = o.stateGB(m, ctx, np)
 	cacheMiB := o.MoECacheMiB
 	if cacheMiB <= 0 {
 		cacheMiB = DefaultMoECacheMiB
@@ -231,7 +249,8 @@ type Result struct {
 	Model      string      `json:"model"`
 	Arch       string      `json:"arch,omitempty"`
 	WeightsGB  float64     `json:"weights_gb"`
-	KVGB       float64     `json:"kv_gb"`
+	KVGB       float64     `json:"kv_gb"`              // the KV cache of the Ctx tokens the slots share
+	StateGB    float64     `json:"state_gb,omitempty"` // the recurrent state of the Np slots (hybrid / state-space models)
 	Ctx        int         `json:"ctx"`
 	Np         int         `json:"np"`
 	SHA256     string      `json:"sha256,omitempty"` // the registered file the plan is for
@@ -245,9 +264,23 @@ type Result struct {
 	Warnings   []string    `json:"warnings,omitempty"` // e.g. the architecture never passed the ring's correctness gate
 }
 
-// KVGB is the KV cache of ctx tokens in np slots over all blocks.
-func (m *Model) KVGB(ctx, np int) float64 {
-	return float64(m.KVPerTokenLayer) * float64(m.Layers) * float64(ctx) * float64(max(np, 1)) / gib
+// ContextText says what the context costs: "KV cache 4.2 GB (131072 tokens, 2 slot(s) share them) + recurrent state 1.4 GB".
+func (r Result) ContextText() string {
+	t := fmt.Sprintf("KV cache %.1f GB (%d tokens", r.KVGB, r.Ctx)
+	if r.Np > 1 {
+		t += fmt.Sprintf(", %d slots share them", r.Np)
+	}
+	t += ")"
+	if r.StateGB >= 0.05 {
+		t += fmt.Sprintf(" + recurrent state %.1f GB", r.StateGB)
+	}
+	return t
+}
+
+// KVGB is the f16 KV cache of ctx tokens over all blocks. ctx is llama-server's -c: the TOTAL context, which the
+// -np slots share (each gets ctx/np, or up to ctx with a unified cache), so the cache does not grow with the slots.
+func (m *Model) KVGB(ctx int) float64 {
+	return float64(m.KVPerTokenLayer) * float64(m.Layers) * float64(ctx) / gib
 }
 
 // Plan lists the ways to run m on nodes, best first.
@@ -272,7 +305,8 @@ func Plan(m *Model, nodes []Node, o Options) Result {
 		Model:     m.Name,
 		Arch:      m.Arch,
 		WeightsGB: float64(m.Weights()) / gib,
-		KVGB:      m.KVGB(o.Ctx, o.Np) * o.kvScale(m),
+		KVGB:      m.KVGB(o.Ctx) * o.kvScale(m),
+		StateGB:   o.rsGB(m, o.Np),
 		Ctx:       o.Ctx,
 		Np:        o.Np,
 		Known:     o.Known,
@@ -354,7 +388,7 @@ func single(m *Model, n Node, o Options) (Candidate, bool) {
 	if n.Bench == nil {
 		return Candidate{}, false
 	}
-	kvGB := m.KVGB(o.Ctx, o.Np) * o.kvScale(m)
+	kvGB := o.stateGB(m, o.Ctx, o.Np)
 	gb := float64(m.Weights())/gib + kvGB
 	var read float64
 	for _, b := range m.LayerRead {
@@ -568,7 +602,7 @@ func blockFigures(m *Model, o Options) (layerW, layerGB, layerRead, outGB float6
 		layerRead += float64(m.LayerRead[i])
 	}
 	layerW = layerGB / L / gib
-	layerGB = layerW + float64(m.KVPerTokenLayer)*float64(o.Ctx)*float64(o.Np)*o.kvScale(m)/gib
+	layerGB = layerW + o.stateGB(m, o.Ctx, o.Np)/L
 	layerRead = layerRead / L / gib
 	outGB = float64(m.OutputBytes) / gib
 	return
@@ -681,7 +715,7 @@ func verdict(r Result, singles, splits []Candidate, hasBench bool) string {
 		if !hasBench {
 			return "no benchmark data yet: no machine has memory bandwidth figures (benchmark with 'fleet nodes bench')"
 		}
-		return fmt.Sprintf("does not fit: the model needs about %.1f GB (weights %.1f + KV cache %.1f for %d × %d tokens) and no machine, or combination of machines, has that much free memory", r.WeightsGB+r.KVGB, r.WeightsGB, r.KVGB, r.Np, r.Ctx)
+		return fmt.Sprintf("does not fit: the model needs about %.1f GB (weights %.1f + %s) and no machine, or combination of machines, has that much free memory", r.WeightsGB+r.KVGB+r.StateGB, r.WeightsGB, r.ContextText())
 	case len(singles) == 0:
 		b := splits[0]
 		return fmt.Sprintf("fits no single machine; the best split (master %s over %s) gives about %.1f tok/s", b.Master, strings.Join(names(b.Parts), ", "), b.TPS)

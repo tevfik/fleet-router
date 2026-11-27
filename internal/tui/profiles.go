@@ -44,7 +44,8 @@ func (m model) candidateProfile(name string) (*profile.Profile, error) {
 	spec := []string{"auto", "draft-dflash", "draft-mtp", "ngram-mod", "none"}[min(m.planSpecMode, 4)]
 	l := profile.CandidateLayout(c, spec, 0, nil)
 	p := &profile.Profile{Name: name, Model: m.planPath, Master: c.Master, Workers: l.Workers, Ctx: m.currentPlanCtx(), Np: planNps[m.planNp],
-		CPUOnly: m.planCPUOnly, Spec: profile.Spec{Type: spec}, Layout: profile.Layout{Mode: profile.LayoutFixed, TS: l.TS, WorkerCPUExperts: l.CPUExperts, ViaHub: m.planViaHub},
+		CPUOnly: m.planCPUOnly, Spec: profile.Spec{Type: spec},
+		Cache: profile.Cache{K: planKVTypes[m.planKV], V: planKVTypes[m.planKV], Unified: m.planKVUnified}, Layout: profile.Layout{Mode: profile.LayoutFixed, TS: l.TS, WorkerCPUExperts: l.CPUExperts, ViaHub: m.planViaHub},
 		Notes: fmt.Sprintf("saved from the plan screen: candidate %d (%s, %.1f t/s estimated)", pick+1, c.Kind, c.TPS)}
 	if m.planMaster != "" {
 		p.Master = m.planMaster

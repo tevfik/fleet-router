@@ -224,6 +224,32 @@ func TestPlanDeploymentDeepSeekOptions(t *testing.T) {
 	if !strings.Contains(resSpec.MasterCmd, "--cache-type-v q8_0") {
 		t.Errorf("expected --cache-type-v q8_0, got: %s", resSpec.MasterCmd)
 	}
+	if strings.Contains(resSpec.MasterCmd, "-kvu") || resSpec.KVUnified {
+		t.Errorf("no unified KV cache unless asked for: %s", resSpec.MasterCmd)
+	}
+
+	// --kv-unified: -kvu on the master, and the endpoint registers the whole context for every slot
+	optsU := optsSpec
+	optsU.Np, optsU.Ctx, optsU.KVUnified = 2, 8192, true
+	resU, err := ExecuteDeployment(context.Background(), cfg, optsU)
+	if err != nil {
+		t.Fatalf("unified deploy plan failed: %v", err)
+	}
+	if !strings.Contains(resU.MasterCmd, " -kvu") || !resU.KVUnified || resU.SlotCtx() != 8192 {
+		t.Errorf("expected -kvu and a slot context of 8192, got %d: %s", resU.SlotCtx(), resU.MasterCmd)
+	}
+	optsU.KVUnified = false
+	resS, err := ExecuteDeployment(context.Background(), cfg, optsU)
+	if err != nil {
+		t.Fatalf("split deploy plan failed: %v", err)
+	}
+	if resS.SlotCtx() != 4096 || strings.Contains(resS.MasterCmd, "-kvu") {
+		t.Errorf("without -kvu two slots get ctx/2 each: %d: %s", resS.SlotCtx(), resS.MasterCmd)
+	}
+	optsU.MasterArgs = []string{"-kvu"}
+	if resA, err := ExecuteDeployment(context.Background(), cfg, optsU); err != nil || !resA.KVUnified || strings.Count(resA.MasterCmd, "-kvu") != 1 {
+		t.Errorf("-kvu given as a master argument counts as unified, once: %v %s", err, resA.MasterCmd)
+	}
 	if resSpec.EstimatedTPS > 60.0 {
 		t.Errorf("the estimate must not include an (unmeasured) speculative boost, got: %f", resSpec.EstimatedTPS)
 	}

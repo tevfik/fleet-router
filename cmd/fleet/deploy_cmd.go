@@ -29,7 +29,7 @@ const deployUsage = `usage: fleet deploy [<model.gguf>] [--engine ring|chain] [-
        [--port N] [--ctx N] [--np N] [--ngl N] [--cpu|--cpu-only] [--ts T] [--mmap] [--mmproj file.gguf] [--mmproj-cpu] [--mmdev D]
        [--wire f16|fp8] [--spec auto|draft-dflash|draft-mtp|draft-dspark|ngram-mod|none] [--draft-model file.gguf] [--draft-max N]
        [--chain] [--io-timeout S] [--worker-port P] [--worker-ready-timeout S] [--exit-on-fail] [--name ENDPOINT]
-       [--local-weights [--worker-model NODE=PATH] [--shards-manifest F]] [--cache-type-k TYPE] [--cache-type-v TYPE]
+       [--local-weights [--worker-model NODE=PATH] [--shards-manifest F]] [--cache-type-k TYPE] [--cache-type-v TYPE] [--kv-unified]
        [--moe-cache-mib N] [--cpu-moe|--n-cpu-moe N] [--worker-cpu-experts NODE=FIRST-LAST[,...]]
        [--via-hub | --via-hub-node N1,N2 | --no-hub] [--hub URL] [--key|--hub-key KEY] [--hub-listen-base P] [--hub-rtt-ms MS]
        [--master-env KEY=VALUE]... [--worker-env NODE:KEY=VALUE]... [--master-arg ARG]...
@@ -54,7 +54,7 @@ type deployFlags struct {
 	hubListenBase, loadTimeout                                                                *int
 	hubRTT                                                                                    *float64
 	cpu, cpuOnly, mmap, mmprojCPU, chain, exitOnFail, cpuMoE, dryRun, forceSplit, force       *bool
-	localWeights, viaHub, noHub, asJSON, explore                                              *bool
+	localWeights, viaHub, noHub, asJSON, explore, kvUnified                                   *bool
 
 	workerModels map[string]string
 	masterEnv    map[string]string
@@ -102,6 +102,7 @@ func newDeployFlags(name string) *deployFlags {
 	d.exitOnFail = fs.Bool("exit-on-fail", false, "set GGML_RING_EXIT_ON_FAIL=1 on the master: ONE failed ring request makes the whole server exit (code 75, 2 s later; all other sessions and the loaded model are lost) so a supervisor (`fleet watchdog`, systemd) restarts it; without a supervisor the endpoint stays dead. Off by default; the watchdog's own redeploys always set it")
 	d.cacheK = fs.String("cache-type-k", "", "KV cache data type for K (f16, q8_0, q4_0)")
 	d.cacheV = fs.String("cache-type-v", "", "KV cache data type for V (f16, q8_0, q4_0)")
+	d.kvUnified = fs.Bool("kv-unified", false, "one KV cache the --np slots share (llama-server -kvu): each request can use up to the whole --ctx; without it every slot gets ctx/np")
 	d.moeCacheMiB = fs.Int("moe-cache-mib", 0, "GPU cache size in MiB for host-resident MoE experts (e.g. 3072)")
 	d.cpuMoE = fs.Bool("cpu-moe", false, "keep all MoE expert weights in host CPU RAM (with hot expert cache on GPU)")
 	d.ncpuMoE = fs.Int("n-cpu-moe", 0, "keep MoE expert weights of first N layers in host CPU RAM")
@@ -183,7 +184,7 @@ func (d *deployFlags) options(model string) (deploy.DeployOptions, error) {
 		MMap: *d.mmap, MMProj: *d.mmproj, MMProjCPU: *d.mmprojCPU, MMProjDevice: *d.mmdev, Wire: *d.wire,
 		SpecType: *d.spec, DraftModel: *d.draftModel, DraftMax: *d.draftMax, Chain: *d.chain, IOTimeoutS: *d.ioTimeout, EndpointName: *d.name,
 		WorkerPort: *d.workerPort, WorkerReadyS: *d.workerReady, ExitOnFail: *d.exitOnFail, LocalWeights: *d.localWeights,
-		WorkerModels: wm, ShardsManifest: *d.shardsManifest, CacheTypeK: *d.cacheK, CacheTypeV: *d.cacheV,
+		WorkerModels: wm, ShardsManifest: *d.shardsManifest, CacheTypeK: *d.cacheK, CacheTypeV: *d.cacheV, KVUnified: *d.kvUnified,
 		MoECacheMiB: *d.moeCacheMiB, CPUMoE: *d.cpuMoE, NCPUMoE: *d.ncpuMoE, WorkerCPUExperts: cpuExperts,
 		DryRun: *d.dryRun, Force: *d.force, LoadTimeoutS: *d.loadTimeout, ConfigPath: config.Path(),
 	}
@@ -252,6 +253,7 @@ func profileArgs(p *profile.Profile, skipSplit bool) []string {
 	num("draft-max", p.Spec.DraftMax)
 	str("cache-type-k", p.Cache.K)
 	str("cache-type-v", p.Cache.V)
+	on("kv-unified", p.Cache.Unified)
 	on("cpu-moe", p.MoE.CPU)
 	num("n-cpu-moe", p.MoE.NCPU)
 	num("moe-cache-mib", p.MoE.CacheMiB)
@@ -356,7 +358,7 @@ func (d *deployFlags) profileFromFlags(name, model string) (*profile.Profile, er
 		p.Spec.Type = *d.spec
 	}
 	p.Spec.DraftModel, p.Spec.DraftMax = *d.draftModel, *d.draftMax
-	p.Cache = profile.Cache{K: *d.cacheK, V: *d.cacheV}
+	p.Cache = profile.Cache{K: *d.cacheK, V: *d.cacheV, Unified: *d.kvUnified}
 	p.MoE = profile.MoE{CPU: *d.cpuMoE, NCPU: *d.ncpuMoE, CacheMiB: *d.moeCacheMiB}
 	p.MMProj = profile.MMProj{Path: *d.mmproj, CPU: *d.mmprojCPU, Device: *d.mmdev}
 	p.Wire = *d.wire
