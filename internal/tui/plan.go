@@ -28,6 +28,8 @@ var (
 	planNps         = []int{1, 2, 4, 8}
 	planStrats      = []string{"latency (Speed)", "throughput (Batch)", "memory (Low VRAM)", "auto (Balanced)"}
 	planMoECaches   = []string{"Auto (Max VRAM)", "3300 MiB", "2048 MiB", "1024 MiB", "Disabled (0)"}
+	planKVCaches    = []string{"q8_0 (Half VRAM)", "q4_0 (Quarter VRAM)", "f16 (Full VRAM)"}
+	planKVTypes     = []string{"q8_0", "q4_0", "f16"}
 	planSpecModes   = []string{"Auto (Topology)", "DFlash (Diffusion)", "MTP (Native)", "Prompt Lookahead", "Disabled"}
 	planEngineModes = []string{"Auto (RTT Smart)", "ring (Protocol 1)", "chain (Protocol 2 / FSP1)"}
 	headS           = accS
@@ -217,7 +219,7 @@ func (m *model) runPlan(path string) tea.Cmd {
 			idx = 0
 		}
 		ctx := ctxs[idx]
-		res, err := cl.Plan(server.PlanRequest{Model: *mod, Ctx: ctx, Np: np, Master: master})
+		res, err := cl.Plan(server.PlanRequest{Model: *mod, Ctx: ctx, Np: np, Master: master, CacheTypeK: planKVTypes[m.planKV], CacheTypeV: planKVTypes[m.planKV]})
 		return planMsg{seq: seq, path: path, model: mod, res: res, err: err, ctxIdx: idx}
 	}
 }
@@ -502,8 +504,8 @@ func (m model) deployCandidate(dry bool) (tea.Model, tea.Cmd) {
 		SpecType:    specType,
 		MoECacheMiB: moeCacheMiB,
 		DraftMax:    0, // 0: automatic (draft-dflash 2, otherwise 4)
-		CacheTypeK:  "q8_0",
-		CacheTypeV:  "q8_0",
+		CacheTypeK:  planKVTypes[m.planKV],
+		CacheTypeV:  planKVTypes[m.planKV],
 		ViaHub:      m.planViaHub, // independent of Chain (worker forwarding), as in `fleet deploy`
 		DryRun:      dry,
 	}
@@ -707,6 +709,10 @@ func (m model) keyPlan(s string) (tea.Model, tea.Cmd) {
 				m.planEngineMode = (m.planEngineMode + dir + len(planEngineModes)) % len(planEngineModes)
 				m.note = helpS.Render(fmt.Sprintf("Engine set to: %s", planEngineModes[m.planEngineMode]))
 				return m, nil
+			case 11:
+				m.planKV = (m.planKV + dir + len(planKVCaches)) % len(planKVCaches)
+				m.note = helpS.Render(fmt.Sprintf("KV cache type: %s", planKVCaches[m.planKV]))
+				return rerun()
 			}
 		}
 		return m, nil
@@ -772,6 +778,10 @@ func (m model) keyPlan(s string) (tea.Model, tea.Cmd) {
 				m.planEngineMode = (m.planEngineMode + 1) % len(planEngineModes)
 				m.note = helpS.Render(fmt.Sprintf("Engine set to: %s", planEngineModes[m.planEngineMode]))
 				return m, nil
+			case 11:
+				m.planKV = (m.planKV + 1) % len(planKVCaches)
+				m.note = helpS.Render(fmt.Sprintf("KV cache type: %s", planKVCaches[m.planKV]))
+				return rerun()
 			}
 		case 2:
 			if m.planRes == nil || len(m.planRes.Candidates) == 0 {
@@ -1031,6 +1041,7 @@ func (m model) viewPlan() string {
 		b.WriteString(m.selector("target", hwOpts, hwIdx, "", currentSec == 1 && currentParam == 4) + "\n")
 
 		b.WriteString(m.selector("moe cache", planMoECaches, m.planMoECache, "", currentSec == 1 && currentParam == 5) + "\n")
+		b.WriteString(m.selector("kv cache", planKVCaches, m.planKV, "", currentSec == 1 && currentParam == 11) + "\n")
 		b.WriteString(m.selector("spec engine", planSpecModes, m.planSpecMode, "", currentSec == 1 && currentParam == 6) + "\n")
 
 		mmOpts := []string{"CPU (0 VRAM)", "GPU VRAM"}
@@ -1376,11 +1387,11 @@ func chainStageOptions(path string, ctxLen, moeSetting, moeCacheMiB int, spec, d
 const planAdvRow = 10
 
 // planParamSeq lists the settings the cursor visits, top to bottom: the four everyday ones, the advanced line, and
-// (when it is open) target, moe cache, spec engine, vision, paging and engine.
+// (when it is open) target, moe cache, kv cache, spec engine, vision, paging and engine.
 func (m model) planParamSeq() []int {
 	seq := []int{0, 1, 2, 3, planAdvRow}
 	if m.planAdv {
-		seq = append(seq, 4, 5, 6, 7, 8, 9)
+		seq = append(seq, 4, 5, 11, 6, 7, 8, 9)
 	}
 	return seq
 }
@@ -1406,7 +1417,7 @@ func (m model) advancedRow(focused bool) string {
 		lead, lbl = accS.Render("▸ "), headS
 	}
 	mark := "▸"
-	hint := "target · moe cache · spec engine · vision · paging · engine"
+	hint := "target · moe cache · kv cache · spec engine · vision · paging · engine"
 	tail := "  (enter or ←/→ opens)"
 	if m.planAdv {
 		mark, hint, tail = "▾", "enter or ←/→ folds them again", ""
@@ -1433,6 +1444,9 @@ func (m model) advancedChanged() []string {
 	}
 	if m.planMoECache != 0 {
 		out = append(out, "moe cache "+planMoECaches[m.planMoECache])
+	}
+	if m.planKV != 0 {
+		out = append(out, "kv cache "+planKVCaches[m.planKV])
 	}
 	if m.planSpecMode != 0 {
 		out = append(out, "spec "+planSpecModes[m.planSpecMode])

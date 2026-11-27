@@ -653,11 +653,13 @@ func PlanDeployment(cfg *config.Config, opts DeployOptions) (*DeployResult, erro
 		envParts = append(envParts, "GGML_RING_EXIT_ON_FAIL=1")
 	}
 	// The backend library is this machine's path: only a master that runs here gets it. A remote master resolves its
-	// own (remoteMasterScript); this machine's /home/... path in its environment would be wrong there.
+	// own (remoteMasterScript); this machine's /home/... path in its environment would be wrong there. A fleet with
+	// the engine linked in carries its backend inside: a stale build directory's libggml-ring.so must not be
+	// exported into it (the installed engine would run the stale backend — the "unknown architecture" family).
 	masterEngine := ""
 	if !isLocalNode(masterNode) {
 		masterEngine = describeRemoteMaster(masterNode)
-	} else if bPath, ok := findBackendPath(); ok {
+	} else if bPath, ok := findBackendPath(); ok && !ringengine.Available() {
 		envParts = append(envParts, fmt.Sprintf("GGML_BACKEND_PATH=%s", bPath))
 		envParts = append(envParts, fmt.Sprintf("LD_LIBRARY_PATH=%s:$LD_LIBRARY_PATH", filepath.Dir(bPath)))
 	}

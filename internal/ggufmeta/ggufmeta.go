@@ -48,7 +48,7 @@ var ftype = map[int]string{0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 7: "Q8_0", 
 // "base" for a language model without one (completion only).
 func (m *Meta) Kind() string {
 	switch {
-	case m.Arch == "clip":
+	case m.Arch == "clip" || m.Arch == "inkling2_v" || strings.HasSuffix(m.Arch, "_v"):
 		return "mmproj"
 	case m.Pooling > 0 || (m.Causal != nil && !*m.Causal && !m.Template):
 		return "embed"
@@ -241,8 +241,8 @@ func Parse(br *bufio.Reader) (*Meta, error) {
 	if t := str("tokenizer.chat_template"); t != "" {
 		m.Template = true
 		low := strings.ToLower(t)
-		m.TemplateTool = strings.Contains(low, "tools") || strings.Contains(low, "tool_call")
-		m.TemplateThink = strings.Contains(low, "<think>") || strings.Contains(low, "enable_thinking") || strings.Contains(low, "reasoning_content")
+		m.TemplateTool = strings.Contains(low, "tools") || strings.Contains(low, "tool_call") || strings.Contains(low, "tool_declare") || strings.Contains(low, "content_invoke_tool")
+		m.TemplateThink = strings.Contains(low, "<think>") || strings.Contains(low, "enable_thinking") || strings.Contains(low, "reasoning_content") || strings.Contains(low, "reasoning_effort") || strings.Contains(low, "content_thinking")
 	}
 	return m, nil
 }

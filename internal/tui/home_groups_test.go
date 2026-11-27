@@ -146,22 +146,22 @@ func TestPlanAdvanced_OpenAndFold(t *testing.T) {
 		t.Fatal("enter on the advanced line opens it")
 	}
 	v := plain(m.viewPlan())
-	for _, shown := range []string{"target ", "moe cache ", "spec engine ", "vision ", "paging ", "engine "} {
+	for _, shown := range []string{"target ", "moe cache ", "kv cache ", "spec engine ", "vision ", "paging ", "engine "} {
 		if !strings.Contains(v, shown) {
 			t.Errorf("%q missing from the open view", shown)
 		}
 	}
-	// open: ↓ goes through all six, then to the candidates
+	// open: ↓ goes through all seven, then to the candidates
 	var walk []int
-	for i := 0; i < 7; i++ {
+	for i := 0; i < 8; i++ {
 		nm, _ := m.keyStr("down", "")
 		m = nm.(model)
 		walk = append(walk, m.planParamCur)
 	}
-	if m.planSection != 2 || len(walk) != 7 {
+	if m.planSection != 2 || len(walk) != 8 {
 		t.Fatalf("open walk %v ended in section %d", walk, m.planSection)
 	}
-	if walk[0] != 4 || walk[5] != 9 {
+	if walk[0] != 4 || walk[6] != 9 {
 		t.Fatalf("open walk %v: target first, engine last", walk)
 	}
 	// ←/→ on the line folds it again

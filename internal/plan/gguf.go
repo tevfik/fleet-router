@@ -44,6 +44,12 @@ type Model struct {
 	HasMTP    bool `json:"has_mtp,omitempty"`    // true if model has embedded NextN / MTP layers
 	MTPLayers int  `json:"mtp_layers,omitempty"` // number of MTP draft heads
 
+	// LoopCount / LoopStart / LoopEnd: looped-block architectures (e.g. inkling2_loop) execute blocks
+	// [LoopStart, LoopEnd) LoopCount times per token; weights are stored once, but LayerRead is scaled.
+	LoopCount int `json:"loop_count,omitempty"`
+	LoopStart int `json:"loop_start,omitempty"`
+	LoopEnd   int `json:"loop_end,omitempty"`
+
 	// Recurrent: some blocks keep a recurrent state (state-space, short-convolution or linear-attention layers)
 	// instead of, or besides, a per-token KV cache. Read from the GGUF schema (<arch>.ssm.*, <arch>.shortconv.*,
 	// <arch>.wkv.*, <arch>.full_attention_interval keys, or blk.N.ssm_* / shortconv / time_mix tensors), never from a name.
@@ -634,7 +640,8 @@ func ParseGGUF(r io.Reader, size int64) (*Model, error) {
 	}
 	geti := func(k string) int { return int(ints[arch+"."+k]) }
 	m := &Model{Name: strs["general.name"], Arch: arch, FileBytes: size, Layers: geti("block_count"), Embd: geti("embedding_length"),
-		CtxMax: geti("context_length"), Experts: geti("expert_count"), ExpertsUsed: geti("expert_used_count")}
+		CtxMax: geti("context_length"), Experts: geti("expert_count"), ExpertsUsed: geti("expert_used_count"),
+		LoopCount: geti("loop.count"), LoopStart: geti("loop.start"), LoopEnd: geti("loop.end")}
 	if m.Layers <= 0 || m.Layers > 4096 || m.Embd <= 0 {
 		return nil, fmt.Errorf("%s: block_count %d, embedding_length %d (no %s.block_count / %s.embedding_length: an architecture the planner does not know)", arch, m.Layers, m.Embd, arch, arch)
 	}
@@ -702,6 +709,9 @@ func (m *Model) addTensors(ts []tensor, dataStart, size int64, shard int) {
 			}
 			if moe && strings.Contains(t.name, "_exps") {
 				read *= float64(m.ExpertsUsed) / float64(m.Experts)
+			}
+			if m.LoopCount > 1 && l >= m.LoopStart && l < m.LoopEnd {
+				read *= float64(m.LoopCount)
 			}
 			m.LayerRead[l] += int64(math.Round(read))
 			continue
@@ -781,7 +791,7 @@ func RecurrentTensor(name string) bool {
 	if _, ok := blockOf(name); !ok {
 		return false
 	}
-	return strings.Contains(name, ".ssm_") || strings.Contains(name, ".shortconv.") || strings.Contains(name, ".time_mix_")
+	return strings.Contains(name, ".ssm_") || strings.Contains(name, ".shortconv.") || strings.Contains(name, ".time_mix_") || strings.Contains(name, "_conv.")
 }
 
 // blockOf reads the block number out of "blk.12.attn_q.weight".

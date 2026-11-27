@@ -346,6 +346,37 @@ func TestRemoteMasterScript(t *testing.T) {
 	}
 }
 
+// The installed engine-bearing fleet must be picked before any llama-ring build directory: a stale dev tree
+// older than the installed engine used to shadow it and the master died on an unknown model architecture (a
+// months-old llama-server beat the installed 0.5.11 engine).
+func TestRemoteMasterScriptPrefersEngineBearingFleet(t *testing.T) {
+	s := remoteMasterScript("", "-m /m/x.gguf --port 18090", "run-1")
+	fleetAt := strings.Index(s, `SERVER_BIN="$FLEET_BIN ring serve"`)
+	firstDirAt := strings.Index(s, "$HOME/llm-cluster/llama-ring/build/bin/llama-server")
+	if fleetAt < 0 || firstDirAt < 0 {
+		t.Fatalf("script lacks a branch:\n%s", s)
+	}
+	if fleetAt > firstDirAt {
+		t.Errorf("the engine-bearing fleet branch must come before the build directories:\n%s", s)
+	}
+	if !strings.Contains(s, `ring info 2>/dev/null | grep -q '"engine"'`) {
+		t.Error("the fleet branch must test the linked engine (ring info), not just that a fleet exists")
+	}
+	// the plain-fleet and bare llama-server fallbacks stay for machines without an engine build
+	if !strings.Contains(s, `SERVER_BIN="fleet ring serve"`) || !strings.Contains(s, "command -v llama-server") {
+		t.Error("fallback branches missing")
+	}
+	// FLEET_LEGACY_ENGINE_DIRS=1 keeps the old order on dev machines that want their own build tree first
+	t.Setenv("FLEET_LEGACY_ENGINE_DIRS", "1")
+	s = remoteMasterScript("", "-m /m/x.gguf --port 18090", "run-1")
+	if strings.Contains(s, `SERVER_BIN="$FLEET_BIN ring serve"`) {
+		t.Error("FLEET_LEGACY_ENGINE_DIRS=1 must keep the build directories first")
+	}
+	if !strings.HasPrefix(s[strings.Index(s, "mkdir"):], "mkdir -p ~/.cache/fleet/runs\nif [ -x \"$HOME/llm-cluster/llama-ring/build/bin/llama-server\"") {
+		t.Errorf("legacy mode must start with the first directory check:\n%s", s)
+	}
+}
+
 // The remote master's start goes through the script: no engine there is an error, not a silent failure.
 func TestExecuteRemoteMasterWithoutEngineFails(t *testing.T) {
 	e := newExecEnv(t)

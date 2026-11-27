@@ -31,7 +31,7 @@ import (
 // EngineVersion is the version of the engine package this fleet is built against (the submodule third_party/fleet-engine
 // at that point). A fleet asks for exactly this one: a newer engine may speak another protocol.
 // FLEET_ENGINE_VERSION overrides it.
-const EngineVersion = "0.5.8"
+const EngineVersion = "0.5.13"
 
 func engineVersion() string {
 	if v := strings.TrimSpace(os.Getenv("FLEET_ENGINE_VERSION")); v != "" {

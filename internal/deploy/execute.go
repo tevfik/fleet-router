@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tevfik/fleet-router/internal/config"
+	"github.com/tevfik/fleet-router/internal/ringengine"
 )
 
 // DefaultLoadTimeout is how long a started master gets to become healthy (ultra-large models over wireless or remote
@@ -361,7 +362,8 @@ func ExecuteDeploymentWithProgress(ctx context.Context, cfg *config.Config, opts
 				env = append(env, envStr)
 			}
 		}
-		if bPath, ok := findBackendPath(); ok {
+		// a fleet with the engine linked in needs no external backend: never point it at a stale build directory
+		if bPath, ok := findBackendPath(); ok && !ringengine.Available() {
 			env = append(env, fmt.Sprintf("GGML_BACKEND_PATH=%s", bPath))
 			env = append(env, "LD_LIBRARY_PATH="+libPathWith(filepath.Dir(bPath), os.Getenv("LD_LIBRARY_PATH")))
 		}

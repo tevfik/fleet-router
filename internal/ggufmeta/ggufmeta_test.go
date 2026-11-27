@@ -143,3 +143,37 @@ func TestParsePrismMLQuants(t *testing.T) {
 		}
 	}
 }
+
+func TestParseInkling2Mini(t *testing.T) {
+	m, err := Parse(build(
+		kv{"general.architecture", 8, "inkling2_loop"},
+		kv{"general.name", 8, "Inkling-2-Mini"},
+		kv{"general.size_label", 8, "128x1.8B"},
+		kv{"inkling2_loop.block_count", 4, 24},
+		kv{"inkling2_loop.context_length", 4, 1048576},
+		kv{"inkling2_loop.expert_count", 4, 128},
+		kv{"inkling2_loop.expert_used_count", 4, 8},
+		kv{"general.file_type", 4, 15},
+		kv{"tokenizer.chat_template", 8, `{% set eff = reasoning_effort %}<|message_system|>tool_declare<|content_xml|><|content_thinking|><|content_invoke_tool_json|>`},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Arch != "inkling2_loop" || m.Layers != 24 || m.Ctx != 1048576 || m.Experts != 128 || m.Used != 8 || m.Quant != "Q4_K_M" {
+		t.Fatalf("unexpected meta: %+v", m)
+	}
+	if m.Kind() != "chat" || !reflect.DeepEqual(m.Caps(), []string{"chat", "tools", "thinking"}) {
+		t.Fatalf("Kind=%q Caps=%v", m.Kind(), m.Caps())
+	}
+
+	proj, err := Parse(build(
+		kv{"general.architecture", 8, "inkling2_v"},
+		kv{"general.name", 8, "Inkling-2-Mini"},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proj.Kind() != "mmproj" || proj.Caps() != nil {
+		t.Fatalf("proj Kind=%q Caps=%v", proj.Kind(), proj.Caps())
+	}
+}

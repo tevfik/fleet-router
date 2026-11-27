@@ -870,3 +870,62 @@ func TestGGMLQuantInfo_PrismML(t *testing.T) {
 		t.Fatalf("Tensors=%+v, want Type=143", m.Tensors)
 	}
 }
+
+func TestParseGGUF_Inkling2LoopMoE(t *testing.T) {
+	kvs := []kv{
+		{"general.architecture", 8, "inkling2_loop"},
+		{"general.name", 8, "Inkling-2-Mini"},
+		{"inkling2_loop.block_count", 4, uint32(24)},
+		{"inkling2_loop.embedding_length", 4, uint32(2304)},
+		{"inkling2_loop.attention.head_count", 4, uint32(24)},
+		{"inkling2_loop.attention.head_count_kv", 4, uint32(8)},
+		{"inkling2_loop.attention.key_length", 4, uint32(128)},
+		{"inkling2_loop.context_length", 4, uint32(1048576)},
+		{"inkling2_loop.expert_count", 4, uint32(128)},
+		{"inkling2_loop.expert_used_count", 4, uint32(8)},
+		{"inkling2_loop.loop.count", 4, uint32(3)},
+		{"inkling2_loop.loop.start", 4, uint32(6)},
+		{"inkling2_loop.loop.end", 4, uint32(18)},
+		{"inkling2_loop.shortconv.l_cache", 4, uint32(4)},
+	}
+	ts := []ten{{"token_embd.weight", 4 * mb}}
+	for i := 0; i < 24; i++ {
+		p := "blk." + string(rune('0'+i/10)) + string(rune('0'+i%10)) + "."
+		if i < 10 {
+			p = "blk." + string(rune('0'+i)) + "."
+		}
+		ts = append(ts,
+			ten{p + "attn_q.weight", 10 * mb},
+			ten{p + "attn_k_conv.weight", mb},
+			ten{p + "ffn_gate_up_exps.weight", 4 * mb},
+			ten{p + "ffn_down_exps.weight", 2 * mb},
+		)
+	}
+	ts = append(ts, ten{"output.weight", 4 * mb})
+	d, _ := gguf(t, kvs, ts)
+	m, err := ParseGGUF(bytes.NewReader(d), int64(len(d)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Arch != "inkling2_loop" || m.Experts != 128 || m.ExpertsUsed != 8 || !m.Recurrent {
+		t.Fatalf("unexpected model: %+v", m)
+	}
+	if got, want := m.ExpertWeights(), int64(24*6*mb); got != want {
+		t.Fatalf("ExpertWeights=%d, want %d", got, want)
+	}
+	// Block 0 (outside loop): dense 11 MB + 600 * (8/128) = 11 + 37.5 = 48.5 MB
+	// Block 6 (inside loop x3): 3 * 48.5 MB = 145.5 MB
+	if m.LayerRead[6] != 3*m.LayerRead[0] {
+		t.Fatalf("looped block LayerRead[6]=%d, want 3*LayerRead[0]=%d", m.LayerRead[6], 3*m.LayerRead[0])
+	}
+	n := Node{
+		Name:  "gpu-box",
+		CapGB: 24,
+		BW:    273,
+		Bench: &hostinfo.Bench{FastWhere: "GPU", FastMem: 24 * (1 << 30), FastBW: 273, RAMBW: 64, CPUMoEBW: 32},
+	}
+	r := Plan(m, []Node{n}, Options{Ctx: 8192, CPUMoE: true, MoECacheMiB: 2048})
+	if len(r.Candidates) == 0 || r.Candidates[0].Where != "GPU+RAM" {
+		t.Fatalf("expected GPU+RAM candidate under --cpu-moe, got %+v", r.Candidates)
+	}
+}

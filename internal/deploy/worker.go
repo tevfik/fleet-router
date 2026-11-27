@@ -68,7 +68,9 @@ func (l workerLaunch) Args() []string {
 // (a shell expression in the remote script).
 func (l workerLaunch) EnvAdd(ldPrev string) []string {
 	var out []string
-	if l.LibDir != "" {
+	if l.LibDir == remoteLibDir {
+		out = append(out, `LD_LIBRARY_PATH=${RW_DIR:+$RW_DIR:}${LD_LIBRARY_PATH:-}`)
+	} else if l.LibDir != "" {
 		out = append(out, "LD_LIBRARY_PATH="+libPathWith(l.LibDir, ldPrev))
 	}
 	return append(out, l.Env...)
@@ -93,8 +95,13 @@ func (l workerLaunch) ShellLine() string {
 
 // remoteWorkerLaunch is the launch inside the remote script: $RW/$RW_PRE/$RW_DIR are set by its binary search.
 func remoteWorkerLaunch(port int, env []string, devices string) workerLaunch {
-	return workerLaunch{Bin: `"$RW"`, Pre: []string{"$RW_PRE"}, LibDir: "$RW_DIR", Port: port, Env: filterWorkerEnv(env), Devices: devices}
+	return workerLaunch{Bin: `"$RW"`, Pre: []string{"$RW_PRE"}, LibDir: remoteLibDir, Port: port, Env: filterWorkerEnv(env), Devices: devices}
 }
+
+// remoteLibDir is the remote script's $RW_DIR as seen at render time: the launch line is written before the
+// script resolves the directory, so it expands there — and adds nothing when the engine-bearing fleet (which
+// carries its engine inside) was picked and left RW_DIR empty.
+const remoteLibDir = "$RW_DIR"
 
 // localWorkerLaunch is the launch on this machine, with the binary resolved now.
 func localWorkerLaunch(port int, env []string, devices string) (workerLaunch, error) {
@@ -114,7 +121,7 @@ func workerCommandLine(node string, port int, env []string, devices string) stri
 		}
 		return l.ShellLine()
 	}
-	return remoteWorkerLaunch(port, env, devices).ShellLine() + "   # on " + node + `: RW = first ring-worker of ` +
+	return remoteWorkerLaunch(port, env, devices).ShellLine() + "   # on " + node + ": RW = the installed fleet whose `fleet ring info` answers (RW_PRE=\"ring worker\"), else first ring-worker of " +
 		strings.Join(workerCandidateDirs, ", ") + `, $PATH, else fleet-engine (RW_PRE="ring worker")`
 }
 
@@ -218,22 +225,28 @@ func remoteWorkerScriptHub(port int, env []string, readyS int, hub, devices stri
 	for _, d := range workerCandidateDirs {
 		dirs = append(dirs, `"`+d+`"`)
 	}
+	embedded := ""
+	if !legacyEngineDirsFirst() {
+		embedded = engineFleetTest + "  RW=\"$FLEET_BIN\"; RW_PRE=\"ring worker\"\nfi\n"
+	}
 	return fmt.Sprintf(`export PATH="$HOME/.local/bin:$PATH"
 mkdir -p "$HOME/.cache/fleet"
 LOG="$HOME/.cache/fleet/worker_%[1]d.log"
 %[2]sbusy=$(fleet_stop_port)
 if [ -n "$busy" ]; then echo "$busy"; exit 0; fi
 RW=""; RW_DIR=""; RW_PRE=""
+%[7]sif [ -z "$RW" ]; then
 for d in %[3]s; do
   if [ -x "$d/ring-worker" ]; then RW="$d/ring-worker"; RW_DIR="$d"; break; fi
 done
+fi
 if [ -z "$RW" ] && command -v ring-worker >/dev/null 2>&1; then RW=$(command -v ring-worker); RW_DIR=$(dirname "$RW"); fi
 if [ -z "$RW" ] && command -v fleet-engine >/dev/null 2>&1; then RW=$(command -v fleet-engine); RW_PRE="ring worker"; fi
 if [ -z "$RW" ]; then echo "FLEET_NOBIN"; exit 0; fi
 %[6]snohup $FLEET_DETACH %[4]s > "$LOG" 2>&1 < /dev/null &
 PID=$!
 echo "FLEET_PID $PID"
-%[5]s`, port, stopOnPortScript(port, workerProcNames), strings.Join(dirs, " "), remoteWorkerLaunch(port, env, devices).ShellLine(), readyLoopScript(port, readyS, onReady), detachShell)
+%[5]s`, port, stopOnPortScript(port, workerProcNames), strings.Join(dirs, " "), remoteWorkerLaunch(port, env, devices).ShellLine(), readyLoopScript(port, readyS, onReady), detachShell, embedded)
 }
 
 // readyLoopScript waits for $PID (output in $LOG) to listen on TCP port, at most readyS seconds: FLEET_READY (then
@@ -346,11 +359,17 @@ func isExecFile(p string) bool {
 	return err == nil && !st.IsDir() && st.Mode()&0o111 != 0
 }
 
-// defaultFindLocalWorker resolves this machine's ring-worker: next to libggml-ring.so, next to the engine
-// (llama-server), the standard build directories / $PATH (ringengine.FindWorkerPath), then a fleet-engine binary or
-// this fleet itself when it has the engine linked in (both have `ring worker`). FindEnginePath alone is not enough:
-// it usually is llama-server, which has no worker mode.
+// defaultFindLocalWorker resolves this machine's ring-worker: an engine-bearing fleet re-executed as `ring worker`
+// comes first (a stale build directory on disk used to shadow the installed engine here too), then the binary next
+// to libggml-ring.so, next to the engine (llama-server), the standard build directories / $PATH
+// (ringengine.FindWorkerPath), then a fleet-engine binary. FindEnginePath alone is not enough: it usually is
+// llama-server, which has no worker mode.
 func defaultFindLocalWorker() (bin string, pre []string, libDir string, err error) {
+	if ringengine.Available() {
+		if exe, err := os.Executable(); err == nil {
+			return exe, []string{"ring", "worker"}, "", nil
+		}
+	}
 	if bp, ok := ringengine.FindBackendPath(); ok {
 		if p := filepath.Join(filepath.Dir(bp), "ring-worker"); isExecFile(p) {
 			return p, nil, filepath.Dir(p), nil
@@ -367,11 +386,6 @@ func defaultFindLocalWorker() (bin string, pre []string, libDir string, err erro
 	}
 	if engOK && filepath.Base(eng) == "fleet-engine" {
 		return eng, []string{"ring", "worker"}, "", nil
-	}
-	if ringengine.Available() {
-		if exe, err := os.Executable(); err == nil {
-			return exe, []string{"ring", "worker"}, "", nil
-		}
 	}
 	return "", nil, "", fmt.Errorf("no ring-worker binary on this machine (looked next to libggml-ring.so and llama-server, in %s and $PATH; a fleet-engine binary would also do)", strings.Join(workerCandidateDirs, ", "))
 }

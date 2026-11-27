@@ -237,7 +237,7 @@ func TestStartRemoteWorkerOutcomes(t *testing.T) {
 			t.Errorf("log tail missing: %v", err)
 		}
 		// Bug 6: the shard env is on the remote start line
-		if s := (*ssh)[0]; !strings.Contains(s, "env LD_LIBRARY_PATH=\"$RW_DIR:${LD_LIBRARY_PATH:-}\" GGML_RING_SHARD_GGUF=/models/m.gguf \"$RW\" $RW_PRE -H 0.0.0.0 -p 50199") {
+		if s := (*ssh)[0]; !strings.Contains(s, `env LD_LIBRARY_PATH="${RW_DIR:+$RW_DIR:}${LD_LIBRARY_PATH:-}" GGML_RING_SHARD_GGUF=/models/m.gguf "$RW" $RW_PRE -H 0.0.0.0 -p 50199`) {
 			t.Errorf("start line without the worker env:\n%s", s)
 		}
 	}
@@ -313,6 +313,38 @@ func TestNodeAddrFromConfig(t *testing.T) {
 		if got := NodeAddrFromConfig(cfg, n); got != "" {
 			t.Errorf("%s: %q", n, got)
 		}
+	}
+}
+
+// The installed engine-bearing fleet wins over a stale ring-worker build directory: a dev tree older than the
+// installed engine must never shadow it on a worker node (the "unknown architecture" failure family).
+func TestRemoteWorkerScriptPrefersEngineBearingFleet(t *testing.T) {
+	s := remoteWorkerScriptHub(50152, nil, 120, "", "")
+	fleetAt := strings.Index(s, `RW="$FLEET_BIN"`)
+	firstDirAt := strings.Index(s, `"$HOME/llm-cluster/llama-ring/build/bin"`)
+	if fleetAt < 0 || firstDirAt < 0 {
+		t.Fatalf("script lacks a branch:\n%s", s)
+	}
+	if fleetAt > firstDirAt {
+		t.Errorf("the engine-bearing fleet branch must come before the build directories:\n%s", s)
+	}
+	if !strings.Contains(s, `ring info 2>/dev/null | grep -q '"engine"'`) {
+		t.Error("the fleet branch must test that its `ring info` answers, not just that a fleet exists")
+	}
+	if !strings.Contains(s, `if [ -z "$RW" ]; then`) {
+		t.Error("the directory scan must be skipped when the fleet branch won")
+	}
+	// an empty RW_DIR (fleet picked) must not add an empty LD_LIBRARY_PATH entry
+	if strings.Contains(s, `LD_LIBRARY_PATH="$RW_DIR:`) {
+		t.Error("a picked fleet has no RW_DIR: the launch line must expand ${RW_DIR:+…}, not a bare leading colon")
+	}
+	t.Setenv("FLEET_LEGACY_ENGINE_DIRS", "1")
+	s = remoteWorkerScriptHub(50152, nil, 120, "", "")
+	if strings.Contains(s, `RW="$FLEET_BIN"`) {
+		t.Error("FLEET_LEGACY_ENGINE_DIRS=1 must keep the dev build directories first")
+	}
+	if !strings.Contains(s, `for d in "$HOME/llm-cluster/llama-ring/build/bin"`) {
+		t.Error("legacy mode must still scan the directories")
 	}
 }
 
